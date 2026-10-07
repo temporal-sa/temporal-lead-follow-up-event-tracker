@@ -24,7 +24,7 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 			return temporal.NewApplicationError("event is refreshing; retry shortly", "Refreshing")
 		}
 		if retiring {
-			return temporal.NewApplicationError("event export window has finished", "Closed")
+			return temporal.NewApplicationError("event is completing; submissions are closed", "Closed")
 		}
 		return nil
 	}
@@ -139,10 +139,12 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 	}, workflow.UpdateHandlerOptions{Validator: validator}); err != nil {
 		return Event{}, err
 	}
-	// Both timers are rebuilt from absolute deadlines after Continue-As-New.
-	if workflow.Now(ctx).Before(state.Event.ClosesAt) {
+	// Preserve the extra timer only when replaying histories from before this change.
+	timerVersion := workflow.GetVersion(ctx, "event-completion-timer-only", workflow.DefaultVersion, 1)
+	if timerVersion == workflow.DefaultVersion && workflow.Now(ctx).Before(state.Event.ClosesAt) {
 		workflow.Go(ctx, func(ctx workflow.Context) { _ = workflow.Sleep(ctx, state.Event.ClosesAt.Sub(workflow.Now(ctx))) })
 	}
+	// Completion starts Temporal retention; queries and exports remain available.
 	remaining := state.Event.CompletesAt.Sub(workflow.Now(ctx))
 	if remaining > 0 {
 		refresh, err := workflow.AwaitWithTimeout(ctx, remaining, func() bool {

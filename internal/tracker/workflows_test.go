@@ -18,11 +18,13 @@ func testEvent() Event {
 	return Event{ID: "test", Name: "Test", EndDate: "2026-10-07", ClosesAt: time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC), CompletesAt: time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC), Shards: []string{}}
 }
 
-func TestEventTimersRejectLateSubmissions(t *testing.T) {
+func TestEventCompletionTimerRejectsLateSubmissions(t *testing.T) {
 	suite := testsuite.WorkflowTestSuite{}
 	env := suite.NewTestWorkflowEnvironment()
 	event := testEvent()
 	env.SetStartTime(event.ClosesAt.Add(-time.Second))
+	var timers []time.Duration
+	env.SetOnTimerScheduledListener(func(_ string, duration time.Duration) { timers = append(timers, duration) })
 	checked := false
 	env.RegisterDelayedCallback(func() {
 		value, err := env.QueryWorkflow("event")
@@ -61,9 +63,12 @@ func TestEventTimersRejectLateSubmissions(t *testing.T) {
 	if !env.Now().Equal(event.CompletesAt) {
 		t.Fatalf("completion time=%v", env.Now())
 	}
+	if len(timers) != 1 || timers[0] != 7*24*time.Hour+time.Second {
+		t.Fatalf("expected only the completion timer, got %v", timers)
+	}
 }
 
-func TestManualEndKeepsScheduledGrace(t *testing.T) {
+func TestManualEndKeepsScheduledCompletion(t *testing.T) {
 	suite := testsuite.WorkflowTestSuite{}
 	env := suite.NewTestWorkflowEnvironment()
 	event := testEvent()
@@ -86,7 +91,24 @@ func TestManualEndKeepsScheduledGrace(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !ended || !env.Now().Equal(event.CompletesAt) {
-		t.Fatal("manual end shortened export window")
+		t.Fatal("manual end shortened the scheduled completion deadline")
+	}
+}
+
+func TestEventPreservesTimersForExistingHistories(t *testing.T) {
+	suite := testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+	event := testEvent()
+	env.SetStartTime(event.ClosesAt.Add(-time.Second))
+	env.OnGetVersion("event-completion-timer-only", workflow.DefaultVersion, workflow.Version(1)).Return(workflow.DefaultVersion)
+	var timers []time.Duration
+	env.SetOnTimerScheduledListener(func(_ string, duration time.Duration) { timers = append(timers, duration) })
+	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if len(timers) != 2 {
+		t.Fatalf("existing histories must retain both original timers, got %v", timers)
 	}
 }
 

@@ -51,13 +51,16 @@ Create an event with a name, optional description, and required end date in UTC.
 An end date of October 7 closes submissions at October 8, 00:00:00 UTC. The event
 and participant workflows complete seven days later, October 15, 00:00:00 UTC.
 Ending manually closes submissions immediately without shortening that scheduled
-export window. Events cannot reopen.
+completion deadline. Events cannot reopen. New workflow runs use a single timer
+for completion; submission updates enforce the cutoff when they arrive, and the
+API derives the displayed status from the current time.
 
 The public form asks for name, title / role, email, and an optional follow-up
 reason. Emails are trimmed and lowercased; the newest submission replaces the
 existing participant's details within that event. The same person may join
-different events. Employees can export while the event is open or ended, and
-query completed workflows while their histories remain in Temporal retention.
+different events. Employees can view and export during the event, after submissions
+close, and after workflows complete, while their histories remain in Temporal
+retention. The seven-day completion timer never disables viewing or export.
 Exports fail explicitly if any participant shard is unavailable.
 
 No automatic emails, contacted/pending status, or external CSV storage are

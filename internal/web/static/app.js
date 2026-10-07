@@ -183,7 +183,7 @@
       const date = new Date(`${get("create-end-date").value}T00:00:00Z`);
       if (Number.isNaN(date.getTime())) return;
       date.setUTCDate(date.getUTCDate() + 1);
-      get("create-date-help").textContent = `Submissions close ${dateText(date)}. Viewing and export remain available for seven more days, then for as long as retained.`;
+      get("create-date-help").textContent = `Submissions close ${dateText(date)}. Responses remain available to view and export for as long as Temporal retains them.`;
     });
     let creating = false;
     get("create-form").addEventListener("submit", async (submission) => {
@@ -231,7 +231,7 @@
       get("detail-end").hidden = event.status !== "open";
       let lifecycle = "";
       if (event.completesAt) {
-        lifecycle = event.status === "archived" ? "Submissions have closed. Viewing and export are available while the responses remain retained." : `Viewing and export available through ${dateText(event.completesAt)}, then for as long as responses remain retained.`;
+        lifecycle = "Responses remain available to view and export for as long as Temporal retains them.";
       }
       get("detail-lifecycle").textContent = lifecycle;
       get("detail-lifecycle").hidden = !lifecycle;

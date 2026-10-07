@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/temporal-sa/temporal-lead-follow-up-event-tracker/internal/tracker"
 	enums "go.temporal.io/api/enums/v1"
@@ -78,8 +79,11 @@ func (g *temporalGateway) Event(ctx context.Context, id string) (tracker.Event, 
 	if err != nil {
 		return event, err
 	}
-	err = result.Get(&event)
-	return event, err
+	if err := result.Get(&event); err != nil {
+		return event, err
+	}
+	// Queries do not advance workflow time, so derive display status at request time.
+	return event.At(time.Now()), nil
 }
 
 func (g *temporalGateway) Submit(ctx context.Context, id string, submission tracker.Submission) error {
