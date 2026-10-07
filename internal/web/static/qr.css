@@ -1,0 +1,4 @@
+:root{color-scheme:light}
+html,body{margin:0;width:100%;min-height:100vh;min-height:100dvh;background:#fff}
+body{display:grid;place-items:center}
+img{display:block;width:min(90vw,90vh);width:min(90vw,90dvh);height:auto;max-width:100%;image-rendering:pixelated}

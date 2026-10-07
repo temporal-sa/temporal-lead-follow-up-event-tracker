@@ -1,0 +1,159 @@
+# Event Lead Tracker
+
+A small mobile-friendly event follow-up form. Temporal employees manage events,
+display QR codes, view participants, and export CSV. All durable application state
+lives in Temporal: there is no database, disk-backed application store, or server
+session store.
+
+## Run locally
+
+Requirements: Go 1.26 or newer and the Temporal CLI.
+
+In one terminal, start a persistent local Temporal server:
+
+```sh
+mkdir -p .local
+temporal server start-dev --db-filename .local/temporal.db
+```
+
+In another terminal:
+
+```sh
+make dev
+```
+
+Open http://localhost:8080/admin. `make dev` runs the web server and worker together
+and enables a local employee identity. `DEV_AUTH_EMAIL` is permitted only with a
+loopback listener and public URL. Unset it to test anonymous visitors. Real
+catalog SSO requires a deployed hostname under `.tmprl-demo.cloud`; its session
+cookie is not sent to localhost.
+
+```sh
+make test
+make vet
+make build
+```
+
+The optional server-backed integration tests exercise worker restart, actual
+Continue-As-New, retained queries, sharding, and history replay. Against an
+isolated local dev server, run:
+
+```sh
+TEMPORAL_INTEGRATION_ADDRESS=localhost:7233 go test ./internal/tracker -run TestIntegration -v
+```
+
+The binary supports `serve`, `worker`, and `dev`. `serve` is the default. In
+deployment, run `serve` and `worker` as separate components from the same image.
+
+## Event behavior
+
+Create an event with a name, optional description, and required end date in UTC.
+An end date of October 7 closes submissions at October 8, 00:00:00 UTC. The event
+and participant workflows complete seven days later, October 15, 00:00:00 UTC.
+Ending manually closes submissions immediately without shortening that scheduled
+export window. Events cannot reopen.
+
+The public form asks for name, title / role, email, and an optional follow-up
+reason. Emails are trimmed and lowercased; the newest submission replaces the
+existing participant's details within that event. The same person may join
+different events. Employees can export while the event is open or ended, and
+query completed workflows while their histories remain in Temporal retention.
+Exports fail explicitly if any participant shard is unavailable.
+
+No automatic emails, contacted/pending status, or external CSV storage are
+included. A future CSV-storage Activity can be added before final completion;
+that change requires replay-compatible versioning for existing workflows.
+
+## Workflow design
+
+`EventWorkflow` owns metadata, UTC timers, counts, and shard references. It
+serializes participant submissions and awaits confirmed shard writes before
+acknowledging success. `ParticipantShardWorkflow` children hold participant
+records, up to 5,000 unique emails or a 1 MiB serialized state budget. New shards
+are created automatically; a growing repeat submission may relocate to a new
+shard. Activity writes carry monotonically increasing sequence numbers so old
+attempts cannot overwrite newer data. Reads and exports verify the coordinator's
+revision and busy flag to avoid incomplete or duplicate data during relocation.
+The coordinator carries receipts for the most recent 1,024 accepted submissions
+across Continue-As-New, so a retried older HTTP request in that window cannot
+replace newer details. Beyond that window a replayed request is treated as a new
+submission; the email still deduplicates to one participant.
+
+Both workflow types Continue-As-New after 500 write operations or when Temporal
+recommends it. Participant children have `ABANDON` parent-close policy and stable
+IDs; they remain alive when the coordinator continues. At final completion, the
+coordinator signals each shard to finish after its handlers drain. Temporal
+Visibility supplies the employee event directory, so newly created events may
+take a moment to appear there; direct links work immediately.
+
+The 5,000 limit counts unique participants, not repeat submissions. Text-heavy
+events shard earlier to stay below Temporal payload limits. Participant and event
+data are stored in workflow histories; anyone with Temporal namespace access can
+inspect them. Deploy this in a namespace appropriate for lead data.
+
+## Configuration
+
+| Variable | Default / purpose |
+| --- | --- |
+| `LISTEN_ADDRESS` | `127.0.0.1:8080`; Docker uses `0.0.0.0:8080` |
+| `PUBLIC_URL` | `http://localhost:8080`; trusted canonical origin for QR and origin checks |
+| `TEMPORAL_ADDRESS` | `localhost:7233` |
+| `TEMPORAL_NAMESPACE` | `default` |
+| `TEMPORAL_TASK_QUEUE` | `event-leads` |
+| `TEMPORAL_API_KEY` | Optional Cloud API key; enables TLS |
+| `TEMPORAL_TLS` | `true` enables TLS without an API key |
+| `TEMPORAL_CLIENT_CERT`, `TEMPORAL_CLIENT_KEY` | Optional mTLS certificate/key file paths |
+| `TEMPORAL_CA_CERT` | Optional custom CA certificate path |
+| `AUTH_BASE_URL` | `https://catalog.tmprl-demo.cloud`; employee login origin |
+| `AUTH_VERIFY_URL` | `https://catalog.tmprl-demo.cloud/_auth/verify`; trusted catalog verifier endpoint |
+| `DEV_AUTH_EMAIL` | Explicit local-only employee identity |
+| `TEMPORAL_DEPLOYMENT_NAME`, `TEMPORAL_WORKER_BUILD_ID` | Set together to enable pinned Worker Deployment Versioning |
+
+Employee authentication sends only the catalog's `temporal_demo_auth` cookie to
+the configured catalog verifier, which validates the session. The app requires
+its `204` response with a subject and an exact `temporal.io` email domain; the
+catalog's bootstrap identity is not accepted. No signing key is shared with this
+app. Identity headers supplied by visitors and participant-entered emails cannot
+grant admin access. Verification runs on every protected request with a
+three-second timeout and no redirect following. A verifier outage blocks admin
+access with `503`; public forms and submissions do not call the verifier. Admin
+mutations require same-origin JSON requests. Public event URLs always show the
+form, even if the visitor is an authenticated employee.
+
+For a different catalog deployment, set both `AUTH_BASE_URL` and `AUTH_VERIFY_URL`
+to its login origin and verifier endpoint.
+
+`GET /healthz` checks the HTTP process. `GET /readyz` checks its Temporal connection.
+The worker logs to stdout and shuts down gracefully on SIGINT/SIGTERM.
+
+## tmprl-demo.cloud deployment
+
+[deploy/demo-project.yaml](deploy/demo-project.yaml) is a sample platform manifest.
+It exposes the web component publicly (`temporalAuthRequired: false`) so visitors
+can submit without employee login; the application protects admin pages and APIs.
+The platform injects Temporal credentials and manages worker versioning.
+The sample points `AUTH_VERIFY_URL` at the catalog's internal Kubernetes service.
+Employee login still uses the public catalog URL. No project auth secret is needed.
+
+The current DemoProject schema allows multiple path routes on one hostname, but
+all routes inherit one `spec.ingress.temporalAuthRequired` value. It does not
+support multiple ingress definitions or per-route auth overrides. This app uses
+public ingress and verifies employee access inside its admin handlers.
+
+Before applying the manifest:
+
+1. Publish this source repository at its configured `temporal-sa` GitHub URL, or
+   adjust the sample source settings.
+2. Ensure the web component can reach the catalog service configured in
+   `AUTH_VERIFY_URL` and that the catalog's employee SSO is configured.
+3. Apply the sample through cluster-gitops-config's normal project flow, and verify
+   the serving web image and current Worker Deployment Version.
+
+The app does not create OAuth clients or issue its own employee sessions. Shared
+SSO requires the deployed hostname to be under `.tmprl-demo.cloud`. Completed
+workflow queries require a compatible worker, even during retention; keep old
+pinned workers available for the desired export period when rolling out changes.
+Do not replace live workflow code without replay checks or versioning.
+
+This repository prepares deployment artifacts; it does not change cluster-gitops
+or deploy infrastructure automatically.

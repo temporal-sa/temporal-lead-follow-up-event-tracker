@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#141414">
+    <meta name="description" content="Stay in touch with Temporal after your event.">
+    <title>Event follow-up · Temporal</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner wrap">
+        <a class="brand" href="/" aria-label="Temporal event follow-up home">
+          <img class="brand-logo" src="/static/temporal-logo.svg" width="172" height="44" alt="Temporal">
+          <span class="brand-product">Event follow-up</span>
+        </a>
+        <span class="employee-identity" id="employee-identity" hidden></span>
+      </div>
+    </header>
+
+    <main id="app" class="wrap" tabindex="-1" aria-busy="true">
+      <p class="initial-loading" role="status">Loading…</p>
+    </main>
+    <noscript><p class="noscript wrap">Please enable JavaScript to use the event follow-up form.</p></noscript>
+
+    <template id="home-template">
+      <section class="form-page">
+        <p class="eyebrow">Let's stay in touch</p>
+        <h1>Pick up the conversation.</h1>
+        <p class="intro">Scan your event's QR code or open the event link to share your details with the Temporal team.</p>
+        <div class="card employee-entry">
+          <h2>Temporal employee?</h2>
+          <p>Create events, collect responses, and export your follow-ups.</p>
+          <a class="button" id="home-login" href="/admin">Employee sign in</a>
+        </div>
+      </section>
+    </template>
+
+    <template id="participant-template">
+      <section class="form-page">
+        <p class="eyebrow">Let's stay in touch</p>
+        <h1 id="event-name"></h1>
+        <p class="intro" id="event-description" hidden></p>
+        <p class="intro" id="participant-intro">Leave your details and the Temporal team can follow up after the event.</p>
+        <div id="event-closed" class="notice" hidden>
+          <h2>Submissions have closed</h2>
+          <p>This event is no longer accepting responses. Thanks for your interest in Temporal.</p>
+        </div>
+        <form id="participant-form" class="card form-card">
+          <fieldset id="participant-fields">
+            <legend class="visually-hidden">Your contact details</legend>
+            <div class="field"><label for="participant-name">Name</label><input id="participant-name" name="name" autocomplete="name" maxlength="120" required></div>
+            <div class="field"><label for="participant-role">Title / role</label><input id="participant-role" name="role" autocomplete="organization-title" maxlength="120" required></div>
+            <div class="field"><label for="participant-email">Email</label><input id="participant-email" name="email" type="email" autocomplete="email" inputmode="email" autocapitalize="none" spellcheck="false" maxlength="254" required></div>
+            <div class="field"><label for="participant-reason">What would you like to follow up on? <span class="optional">Optional</span></label><textarea id="participant-reason" name="reason" rows="3" maxlength="1000" placeholder="A question, a use case, or something we talked about…"></textarea></div>
+            <button class="button submit-button" type="submit" id="participant-submit">Request a follow-up <span aria-hidden="true">→</span></button>
+          </fieldset>
+          <p class="feedback" id="participant-feedback" role="status" tabindex="-1" hidden></p>
+          <p class="form-note">We'll use these details to follow up with you about this event.</p>
+        </form>
+        <div id="participant-success" class="card success-card" tabindex="-1" hidden>
+          <span class="success-icon" aria-hidden="true">✓</span>
+          <h2>You're all set.</h2>
+          <p>Your details have been saved for the Temporal team. You can close this page.</p>
+        </div>
+      </section>
+    </template>
+
+    <template id="admin-template">
+      <section class="admin-page">
+        <div class="page-heading">
+          <div><p class="eyebrow">Employee control panel</p><h1>Your events</h1><p class="intro">A simple place to collect your next conversation.</p></div>
+          <button class="button" id="show-create" type="button" aria-expanded="false" aria-controls="create-section">Create event <span aria-hidden="true">+</span></button>
+        </div>
+        <section class="card create-section" id="create-section" hidden>
+          <h2>Create an event</h2>
+          <form id="create-form">
+            <fieldset id="create-fields"><legend class="visually-hidden">New event details</legend>
+              <div class="field"><label for="create-name">Event name</label><input id="create-name" name="name" maxlength="120" required placeholder="e.g. Developer conference"></div>
+              <div class="field"><label for="create-description">Description <span class="optional">Optional</span></label><textarea id="create-description" name="description" rows="2" maxlength="1000" placeholder="A short welcome or reminder for participants"></textarea></div>
+              <div class="field date-field"><label for="create-end-date">Last day for responses · UTC</label><input id="create-end-date" name="endDate" type="date" required aria-describedby="create-date-help"><p class="field-help" id="create-date-help">Submissions close at midnight UTC after this date. Viewing and export remain available for seven more days, then for as long as retained.</p></div>
+              <div class="actions"><button class="button" id="create-submit" type="submit">Create event</button><button class="button secondary" id="cancel-create" type="button">Cancel</button></div>
+            </fieldset>
+            <p class="feedback" id="create-feedback" role="status" tabindex="-1" hidden></p>
+          </form>
+        </section>
+        <p class="feedback" id="events-feedback" role="status" tabindex="-1" hidden></p>
+        <div class="event-grid" id="event-list"></div>
+        <div class="empty-state card" id="events-empty" hidden><h2>Start with an event.</h2><p>Create an event, share its QR code, and keep all of your responses together.</p></div>
+        <button class="button secondary load-more" id="events-more" type="button" hidden>Load more events</button>
+      </section>
+    </template>
+
+    <template id="detail-template">
+      <section class="admin-page">
+        <a class="back-link" href="/admin">← All events</a>
+        <div class="page-heading detail-heading"><div><p class="eyebrow">Event responses</p><h1 id="detail-name"></h1><p class="intro" id="detail-description" hidden></p></div><span id="detail-status" class="status-badge"></span></div>
+        <div class="card event-summary">
+          <div class="event-metrics"><div><span class="metric-label">Responses</span><strong class="metric-value" id="detail-count"></strong></div><div><span class="metric-label">Submissions close</span><strong class="metric-date" id="detail-closes"></strong></div></div>
+          <p id="detail-lifecycle" class="field-help"></p>
+          <div class="actions event-actions">
+            <a class="button" id="detail-qr" target="_blank" rel="noopener" href="#">Display QR code <span class="visually-hidden">in a new tab</span><span aria-hidden="true">↗</span></a>
+            <button class="button secondary" id="detail-copy" type="button">Copy form link</button>
+            <button class="button secondary" id="detail-export" type="button">Export CSV <span aria-hidden="true">↓</span></button>
+            <button class="button danger" id="detail-end" type="button">End event</button>
+          </div>
+          <p class="feedback" id="detail-feedback" role="status" tabindex="-1" hidden></p>
+        </div>
+        <div class="section-heading"><h2>Participants</h2><button class="text-button" id="refresh-leads" type="button">Refresh</button></div>
+        <p class="feedback" id="leads-feedback" role="status" tabindex="-1" hidden></p>
+        <div class="table-card card" id="leads-table-wrap" hidden>
+          <table class="leads-table"><caption class="visually-hidden">Event participants</caption><thead><tr><th scope="col">Name</th><th scope="col">Title / role</th><th scope="col">Email</th><th scope="col">Follow-up reason</th><th scope="col">Last submitted · UTC</th></tr></thead><tbody id="leads-body"></tbody></table>
+        </div>
+        <div class="empty-state card" id="leads-empty" hidden><h2>No responses yet.</h2><p>Share the form link or display the QR code to get started.</p></div>
+        <button class="button secondary load-more" id="leads-more" type="button" hidden>Load more participants</button>
+        <dialog id="end-dialog" aria-labelledby="end-dialog-title" aria-describedby="end-dialog-description">
+          <h2 id="end-dialog-title">End this event?</h2><p id="end-dialog-description">New responses will stop immediately. You can still view and export the responses already collected.</p>
+          <div class="actions"><button class="button danger" id="confirm-end" type="button">End event</button><button class="button secondary" id="cancel-end" type="button">Keep event open</button></div>
+        </dialog>
+      </section>
+    </template>
+  </body>
+</html>
