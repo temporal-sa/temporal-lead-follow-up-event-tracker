@@ -379,7 +379,7 @@ func (s *server) decode(w http.ResponseWriter, r *http.Request, target any, requ
 
 var qrTemplate = template.Must(template.New("qr").Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.Name}} · Temporal</title><link rel="stylesheet" href="/static/qr.css"></head>
-<body><main class="qr-display"><div class="qr-copy"><img class="brand" src="/static/temporal-logo.svg" alt="Temporal"><p class="eyebrow">LET’S KEEP THE CONVERSATION GOING</p><h1>{{.Name}}</h1><p class="banner">{{.Banner}}</p><p class="qr-instruction">Open your camera. Scan the code.<br>Tell us what you’d like to explore.</p></div><div class="qr-panel"><div class="qr-frame"><img class="qr-code" src="{{.ImageURL}}" alt="Scan to open the event follow-up form"></div><p class="qr-caption">YOUR NEXT CONVERSATION STARTS HERE <span aria-hidden="true">↗</span></p></div></main></body></html>`))
+<body{{if .AllowMotion}} class="allow-motion"{{end}}><main class="qr-display"><div class="qr-copy"><img class="brand" src="/static/temporal-logo.svg" alt="Temporal"><p class="eyebrow">LET’S KEEP THE CONVERSATION GOING</p><h1>{{.Name}}</h1><p class="banner">{{.Banner}}</p><p class="qr-instruction">Open your camera. Scan the code.<span>Tell us what you’d like to explore.</span></p></div><div class="qr-panel"><div class="qr-stage"><div class="ziggy" aria-hidden="true"><img class="ziggy-open" src="/static/ziggy-peek.png" alt=""><img class="ziggy-blink" src="/static/ziggy-blink.png" alt=""></div><div class="qr-frame"><img class="qr-code" src="{{.ImageURL}}" alt="Scan to open the event follow-up form"></div></div><p class="qr-caption">YOUR NEXT CONVERSATION STARTS HERE <span aria-hidden="true">↗</span></p></div></main></body></html>`))
 
 func (s *server) qrPage(w http.ResponseWriter, r *http.Request) {
 	event, err := s.getEvent(r)
@@ -394,7 +394,8 @@ func (s *server) qrPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = qrTemplate.Execute(w, struct {
 		Name, Banner, ImageURL string
-	}{event.Name, banner, "/admin/events/" + event.ID + "/qr.png"})
+		AllowMotion            bool
+	}{event.Name, banner, "/admin/events/" + event.ID + "/qr.png", r.URL.Query().Get("motion") == "on"})
 }
 
 func (s *server) qrImage(w http.ResponseWriter, r *http.Request) {
