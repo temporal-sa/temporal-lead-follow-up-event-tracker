@@ -161,6 +161,7 @@ func TestVerifierUnavailableBlocksEveryAdminRoute(t *testing.T) {
 		{"POST", "/api/admin/events"},
 		{"GET", "/api/admin/events/demo"},
 		{"POST", "/api/admin/events/demo/end"},
+		{"POST", "/api/admin/events/demo/banner"},
 		{"GET", "/api/admin/events/demo/participants"},
 		{"GET", "/api/admin/events/demo/export.csv"},
 		{"GET", "/admin"},

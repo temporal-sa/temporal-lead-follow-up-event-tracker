@@ -9,6 +9,20 @@ session store.
 
 Requirements: Go 1.26 or newer and the Temporal CLI.
 
+For a complete local preview, including a persistent local Temporal server,
+worker, and employee control panel:
+
+```sh
+make preview
+```
+
+Open http://localhost:8080/admin. The preview uses its own Temporal server on
+port 7234 (UI on 8234), ignores inherited Cloud credentials, and stores Temporal
+data under `.local/preview/`. Stop it with Ctrl+C. To change ports, set
+`PREVIEW_PORT`, `PREVIEW_TEMPORAL_PORT`, and `PREVIEW_TEMPORAL_UI_PORT`.
+
+To run against an existing local Temporal server instead:
+
 In one terminal, start a persistent local Temporal server:
 
 ```sh
@@ -55,13 +69,35 @@ completion deadline. Events cannot reopen. New workflow runs use a single timer
 for completion; submission updates enforce the cutoff when they arrive, and the
 API derives the displayed status from the current time.
 
-The public form asks for name, title / role, email, and an optional follow-up
-reason. Emails are trimmed and lowercased; the newest submission replaces the
+New events start with a form template containing name, title / role, email, and
+an optional follow-up reason. Customize the questions when creating an event:
+edit labels and help text, add or remove questions, reorder them, and mark them
+required or optional. A required email question stays in the first section so
+every response has a deduplication key.
+
+Question types include short text, paragraphs, email, phone, URL, number, multiple
+choice, dropdown, checkboxes, linear scale, rating, date, time, and single-choice
+or checkbox grids. Organize questions into sections. Multiple-choice and dropdown
+answers can route to a later section or submit immediately; sections also have
+a default next step. Required questions in skipped sections do not block submission.
+The server validates the selected path and discards answers from skipped sections.
+Form definitions stay fixed after event creation so captured responses and export
+columns retain their meaning. Existing events keep their original form behavior.
+
+Set a QR-page banner during event creation or update it from the event control
+panel while the event workflow is active. The fullscreen display includes Temporal
+branding, the event name, banner, and a QR code linking to the public form. It
+adapts to a phone, desktop, or presentation screen.
+
+Emails are trimmed and lowercased; the newest submission replaces the
 existing participant's details within that event. The same person may join
 different events. Employees can view and export during the event, after submissions
 close, and after workflows complete, while their histories remain in Temporal
 retention. The seven-day completion timer never disables viewing or export.
-Exports fail explicitly if any participant shard is unavailable.
+Exports include all configured questions in form order, with stable question IDs
+in column headers; grids have a column per row. Checkbox answers use JSON arrays
+inside CSV cells to preserve individual selections. Exports fail explicitly if
+any participant shard is unavailable.
 
 No automatic emails, contacted/pending status, or external CSV storage are
 included. A future CSV-storage Activity can be added before final completion;

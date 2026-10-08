@@ -109,3 +109,80 @@ func TestIntegrationExportAfterWorkflowCompletion(t *testing.T) {
 		t.Fatalf("expected one completion timer, got %d", timers)
 	}
 }
+
+func TestIntegrationCustomFormDedupeBannerAndExportAfterWorkerRestart(t *testing.T) {
+	address := os.Getenv("TEMPORAL_INTEGRATION_ADDRESS")
+	if address == "" {
+		t.Skip("set TEMPORAL_INTEGRATION_ADDRESS to run against a local Temporal dev server")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c, err := client.DialContext(ctx, client.Options{HostPort: address, Namespace: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	queue := fmt.Sprintf("custom-form-%d", time.Now().UnixNano())
+	newWorker := func() worker.Worker {
+		w := worker.New(c, queue, worker.Options{})
+		w.RegisterWorkflow(tracker.EventWorkflow)
+		w.RegisterWorkflow(tracker.ParticipantShardWorkflow)
+		w.RegisterActivity(&tracker.Activities{Client: c})
+		return w
+	}
+	w := newWorker()
+	if err := w.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { w.Stop() }()
+	h := testHandler(t, NewTemporalGateway(c, queue))
+	body, err := json.Marshal(tracker.CreateEvent{
+		Name: "Custom event", EndDate: time.Now().UTC().Add(24 * time.Hour).Format("2006-01-02"),
+		Form: customAPIForm(), QRBanner: "Meet the team.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := request(t, h, "POST", "/api/admin/events", string(body), validSession, "https://leads.tmprl-demo.cloud")
+	var event tracker.Event
+	if response.Code != http.StatusCreated || json.Unmarshal(response.Body.Bytes(), &event) != nil {
+		t.Fatalf("create custom event: %d %s", response.Code, response.Body.String())
+	}
+	defer c.CancelWorkflow(context.Background(), tracker.EventID(event.ID), "")
+	defer c.CancelWorkflow(context.Background(), tracker.ShardID(event.ID, 0), "")
+	for i, topic := range []string{"Workflows", "Platform"} {
+		body, err = json.Marshal(tracker.Submission{RequestID: fmt.Sprintf("custom-integration-%02d", i), Answers: []tracker.Answer{
+			{FieldID: "email", Values: []string{" PAT@EXAMPLE.COM "}},
+			{FieldID: "topic", Values: []string{topic}},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response = request(t, h, "POST", "/api/events/"+event.ID+"/participants", string(body), "", "")
+		if response.Code != http.StatusOK {
+			t.Fatalf("custom submit: %d %s", response.Code, response.Body.String())
+		}
+	}
+	response = request(t, h, "POST", "/api/admin/events/"+event.ID+"/banner", `{"banner":"See you at the next conversation."}`, validSession, "https://leads.tmprl-demo.cloud")
+	if response.Code != http.StatusOK {
+		t.Fatalf("banner update: %d %s", response.Code, response.Body.String())
+	}
+	w.Stop()
+	w = newWorker()
+	if err := w.Start(); err != nil {
+		t.Fatal(err)
+	}
+	response = request(t, h, "GET", "/api/admin/events/"+event.ID, "", validSession, "")
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &event) != nil || event.Count != 1 || event.QRBanner != "See you at the next conversation." {
+		t.Fatalf("replayed event: %d %s", response.Code, response.Body.String())
+	}
+	response = request(t, h, "GET", "/api/admin/events/"+event.ID+"/export.csv", "", validSession, "")
+	rows, err := csv.NewReader(strings.NewReader(response.Body.String())).ReadAll()
+	if response.Code != http.StatusOK || err != nil || len(rows) != 2 || len(rows[1]) != 8 || rows[1][3] != "pat@example.com" || rows[1][4] != "" || rows[1][5] != "Platform" {
+		t.Fatalf("custom export after restart: %d %s error=%v", response.Code, response.Body.String(), err)
+	}
+	response = request(t, h, "GET", "/admin/events/"+event.ID+"/qr", "", validSession, "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "See you at the next conversation.") {
+		t.Fatalf("replayed QR banner: %d %s", response.Code, response.Body.String())
+	}
+}

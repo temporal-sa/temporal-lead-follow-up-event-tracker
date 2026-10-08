@@ -1,4 +1,4 @@
-.PHONY: build test vet dev
+.PHONY: build test vet dev preview
 
 build:
 	go build -o bin/tracker ./cmd/tracker
@@ -11,3 +11,6 @@ vet:
 
 dev:
 	DEV_AUTH_EMAIL=developer@temporal.io go run ./cmd/tracker dev
+
+preview:
+	bash scripts/local-preview.sh

@@ -7,6 +7,7 @@
     <meta name="description" content="Stay in touch with Temporal after your event.">
     <title>Event follow-up · Temporal</title>
     <link rel="stylesheet" href="/static/styles.css">
+    <script src="/static/forms.js" defer></script>
     <script src="/static/app.js" defer></script>
   </head>
   <body>
@@ -49,14 +50,7 @@
           <p>This event is no longer accepting responses. Thanks for your interest in Temporal.</p>
         </div>
         <form id="participant-form" class="card form-card">
-          <fieldset id="participant-fields">
-            <legend class="visually-hidden">Your contact details</legend>
-            <div class="field"><label for="participant-name">Name</label><input id="participant-name" name="name" autocomplete="name" maxlength="120" required></div>
-            <div class="field"><label for="participant-role">Title / role</label><input id="participant-role" name="role" autocomplete="organization-title" maxlength="120" required></div>
-            <div class="field"><label for="participant-email">Email</label><input id="participant-email" name="email" type="email" autocomplete="email" inputmode="email" autocapitalize="none" spellcheck="false" maxlength="254" required></div>
-            <div class="field"><label for="participant-reason">What would you like to follow up on? <span class="optional">Optional</span></label><textarea id="participant-reason" name="reason" rows="3" maxlength="1000" placeholder="A question, a use case, or something we talked about…"></textarea></div>
-            <button class="button submit-button" type="submit" id="participant-submit">Request a follow-up <span aria-hidden="true">→</span></button>
-          </fieldset>
+          <fieldset id="participant-fields"><legend class="visually-hidden">Event follow-up questions</legend></fieldset>
           <p class="feedback" id="participant-feedback" role="status" tabindex="-1" hidden></p>
           <p class="form-note">We'll use these details to follow up with you about this event.</p>
         </form>
@@ -75,12 +69,18 @@
           <button class="button" id="show-create" type="button" aria-expanded="false" aria-controls="create-section">Create event <span aria-hidden="true">+</span></button>
         </div>
         <section class="card create-section" id="create-section" hidden>
-          <h2>Create an event</h2>
+          <div class="create-heading"><div><p class="eyebrow">NEW EVENT</p><h2>Make the next conversation happen.</h2></div><span class="create-template-badge">Contact template</span></div>
           <form id="create-form">
             <fieldset id="create-fields"><legend class="visually-hidden">New event details</legend>
-              <div class="field"><label for="create-name">Event name</label><input id="create-name" name="name" maxlength="120" required placeholder="e.g. Developer conference"></div>
-              <div class="field"><label for="create-description">Description <span class="optional">Optional</span></label><textarea id="create-description" name="description" rows="2" maxlength="1000" placeholder="A short welcome or reminder for participants"></textarea></div>
-              <div class="field date-field"><label for="create-end-date">Last day for responses · UTC</label><input id="create-end-date" name="endDate" type="date" required aria-describedby="create-date-help"><p class="field-help" id="create-date-help">Submissions close at midnight UTC after this date. Responses remain available to view and export for as long as Temporal retains them.</p></div>
+              <div class="event-settings-grid">
+                <div class="field"><label for="create-name">Event name</label><input id="create-name" name="name" maxlength="120" required placeholder="e.g. Developer conference"></div>
+                <div class="field"><label for="create-end-date">Last day for responses · UTC</label><input id="create-end-date" name="endDate" type="date" required aria-describedby="create-date-help"></div>
+                <div class="field settings-description"><label for="create-description">Welcome message <span class="optional">Optional</span></label><textarea id="create-description" name="description" rows="2" maxlength="1000" placeholder="A short welcome for participants"></textarea></div>
+              </div>
+              <p class="field-help" id="create-date-help">Submissions close at midnight UTC after this date. Responses remain available to view and export for as long as Temporal retains them.</p>
+              <div id="form-builder" class="form-builder"></div>
+              <section class="qr-settings"><div><p class="eyebrow">SHARE THE CONVERSATION</p><h2>Your QR display</h2><p class="field-help">A full-screen Temporal display for a phone, tablet, or event booth. You can update this message after creating the event.</p></div><div class="field"><label for="create-qr-banner">Banner message <span class="optional">Optional</span></label><textarea id="create-qr-banner" name="qrBanner" rows="2" maxlength="500" placeholder="Scan to stay in touch with the Temporal team."></textarea></div><div class="qr-banner-preview"><span class="qr-preview-mark" aria-hidden="true">▦</span><div><span class="metric-label">QR display message</span><p id="create-banner-preview">Scan to keep the conversation going.</p></div></div></section>
+              <p class="field-help immutable-form-note">Your questions are fixed once the event is created, so every response uses the same form.</p>
               <div class="actions"><button class="button" id="create-submit" type="submit">Create event</button><button class="button secondary" id="cancel-create" type="button">Cancel</button></div>
             </fieldset>
             <p class="feedback" id="create-feedback" role="status" tabindex="-1" hidden></p>
@@ -108,10 +108,11 @@
           </div>
           <p class="feedback" id="detail-feedback" role="status" tabindex="-1" hidden></p>
         </div>
+        <section class="card detail-banner-card"><div class="section-heading"><div><p class="eyebrow">QR DISPLAY</p><h2>Set the message people see.</h2></div><a id="detail-form-preview" class="text-button" target="_blank" rel="noopener" href="#">Open attendee form ↗</a></div><form id="banner-form"><div class="banner-edit-row"><div class="field"><label for="detail-banner">Banner message <span class="optional">Optional</span></label><textarea id="detail-banner" rows="2" maxlength="500" placeholder="Scan to keep the conversation going."></textarea></div><button class="button secondary" id="banner-save" type="submit">Save message</button></div><p class="feedback" id="banner-feedback" role="status" tabindex="-1" hidden></p></form></section>
         <div class="section-heading"><h2>Participants</h2><button class="text-button" id="refresh-leads" type="button">Refresh</button></div>
         <p class="feedback" id="leads-feedback" role="status" tabindex="-1" hidden></p>
         <div class="table-card card" id="leads-table-wrap" hidden>
-          <table class="leads-table"><caption class="visually-hidden">Event participants</caption><thead><tr><th scope="col">Name</th><th scope="col">Title / role</th><th scope="col">Email</th><th scope="col">Follow-up reason</th><th scope="col">Last submitted · UTC</th></tr></thead><tbody id="leads-body"></tbody></table>
+          <table class="leads-table"><caption class="visually-hidden">Event participants</caption><thead><tr id="leads-head"></tr></thead><tbody id="leads-body"></tbody></table>
         </div>
         <div class="empty-state card" id="leads-empty" hidden><h2>No responses yet.</h2><p>Share the form link or display the QR code to get started.</p></div>
         <button class="button secondary load-more" id="leads-more" type="button" hidden>Load more participants</button>

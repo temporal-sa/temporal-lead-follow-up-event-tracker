@@ -142,7 +142,17 @@ func (s *server) csvSnapshot(ctx context.Context, id string) ([]byte, error) {
 	}
 	var buffer bytes.Buffer
 	writer := csv.NewWriter(&buffer)
-	if err := writer.Write([]string{"event_id", "event_name", "event_end_date_utc", "name", "title_role", "email", "follow_up_reason", "first_submitted_at_utc", "last_submitted_at_utc"}); err != nil {
+	columns := formCSVColumns(event)
+	header := []string{"event_id", "event_name", "event_end_date_utc"}
+	if event.Form == nil {
+		header = append(header, "name", "title_role", "email", "follow_up_reason")
+	} else {
+		for _, column := range columns {
+			header = append(header, safeCSVCell(column.label))
+		}
+	}
+	header = append(header, "first_submitted_at_utc", "last_submitted_at_utc")
+	if err := writer.Write(header); err != nil {
 		return nil, err
 	}
 	count := 0
@@ -158,7 +168,15 @@ func (s *server) csvSnapshot(ctx context.Context, id string) ([]byte, error) {
 					return nil, errChanged
 				}
 				emails[lead.Email] = struct{}{}
-				row := []string{event.ID, event.Name, event.EndDate, lead.Name, lead.Role, lead.Email, lead.Reason, lead.FirstSubmittedAt.UTC().Format(time.RFC3339Nano), lead.LastSubmittedAt.UTC().Format(time.RFC3339Nano)}
+				row := []string{event.ID, event.Name, event.EndDate}
+				if event.Form == nil {
+					row = append(row, lead.Name, lead.Role, lead.Email, lead.Reason)
+				} else {
+					for _, column := range columns {
+						row = append(row, column.value(lead))
+					}
+				}
+				row = append(row, lead.FirstSubmittedAt.UTC().Format(time.RFC3339Nano), lead.LastSubmittedAt.UTC().Format(time.RFC3339Nano))
 				for i := range row {
 					row[i] = safeCSVCell(row[i])
 				}
@@ -185,6 +203,54 @@ func (s *server) csvSnapshot(ctx context.Context, id string) ([]byte, error) {
 		return nil, err
 	}
 	return buffer.Bytes(), nil
+}
+
+type formCSVColumn struct {
+	label      string
+	fieldID    string
+	gridRow    int // -1 for a field with one column; otherwise its row position.
+	checkboxes bool
+}
+
+func formCSVColumns(event tracker.Event) []formCSVColumn {
+	if event.Form == nil {
+		return nil
+	}
+	var columns []formCSVColumn
+	for _, section := range event.Form.Sections {
+		for _, field := range section.Fields {
+			if field.Type == "multiple_choice_grid" || field.Type == "checkbox_grid" {
+				for i, row := range field.Rows {
+					columns = append(columns, formCSVColumn{
+						label:   fmt.Sprintf("%s: %s [%s.row%d]", field.Label, row, field.ID, i+1),
+						fieldID: field.ID, gridRow: i,
+					})
+				}
+				continue
+			}
+			columns = append(columns, formCSVColumn{label: field.Label + " [" + field.ID + "]", fieldID: field.ID, gridRow: -1, checkboxes: field.Type == "checkboxes"})
+		}
+	}
+	return columns
+}
+
+func (column formCSVColumn) value(lead tracker.Lead) string {
+	values := tracker.AnswerValues(lead, column.fieldID)
+	if column.gridRow >= 0 {
+		if column.gridRow >= len(values) || values[column.gridRow] == "[]" {
+			return ""
+		}
+		return values[column.gridRow]
+	}
+	if len(values) == 0 {
+		return ""
+	}
+	if len(values) == 1 && !column.checkboxes {
+		return values[0]
+	}
+	// JSON keeps multi-select values unambiguous when options contain separators.
+	data, _ := json.Marshal(values)
+	return string(data)
 }
 
 // CSV readers may evaluate formulas even after leading whitespace.

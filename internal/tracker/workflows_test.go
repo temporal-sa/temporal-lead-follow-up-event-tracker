@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -358,5 +359,105 @@ func TestShardFinishesAtContinueAsNewBoundary(t *testing.T) {
 	}
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCustomSubmissionRetryIncludesAnswersAndPreservesDedupe(t *testing.T) {
+	for _, changed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("changed=%t", changed), func(t *testing.T) {
+			suite := testsuite.WorkflowTestSuite{}
+			env := suite.NewTestWorkflowEnvironment()
+			event := testEvent()
+			form := DefaultForm()
+			form.Sections[0].Fields = append(form.Sections[0].Fields, Field{ID: "topic", Label: "Topic", Type: "short_text"})
+			event.Form = &form
+			event.Count = 1
+			event.Shards = []string{"original"}
+			env.SetStartTime(event.ClosesAt.Add(-time.Hour))
+			env.RegisterActivity(&Activities{})
+			input := Submission{Name: "Pat", Role: "Engineer", Email: "p@example.com", RequestID: "12345678-1234-1234"}
+			normalized, _ := input.NormalizeForEvent(event)
+			normalized.Answers = append(normalized.Answers, Answer{FieldID: "topic", Values: []string{"Temporal"}})
+			prior := Lead{Name: normalized.Name, Role: normalized.Role, Email: normalized.Email, RequestID: normalized.RequestID, Answers: normalized.Answers}
+			env.OnActivity("LocateLead", mock.Anything, mock.Anything).Return(LocatedLead{ShardID: "original", Lead: &prior}, nil)
+			env.OnSignalExternalWorkflow(mock.Anything, "original", "", "finish", mock.Anything).Return(nil)
+			if changed {
+				normalized.Answers = append([]Answer(nil), normalized.Answers...)
+				normalized.Answers[len(normalized.Answers)-1].Values = []string{"Cloud"}
+			}
+			checked := false
+			env.RegisterDelayedCallback(func() {
+				env.UpdateWorkflow("submit", normalized.RequestID, &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
+					if (err != nil) != changed {
+						t.Errorf("changed=%t error=%v", changed, err)
+					}
+					checked = true
+				}}, normalized)
+			}, time.Second)
+			env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
+			if err := env.GetWorkflowError(); err != nil {
+				t.Fatal(err)
+			}
+			var result Event
+			_ = env.GetWorkflowResult(&result)
+			if !checked || result.Count != 1 || result.Revision != 0 {
+				t.Fatal("retry mutated participant state")
+			}
+			env.AssertExpectations(t)
+		})
+	}
+}
+
+func TestBannerUpdateAndSchemaSurviveContinueAsNew(t *testing.T) {
+	suite := testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+	event := testEvent()
+	form := DefaultForm()
+	event.Form = &form
+	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
+	checked := false
+	env.RegisterDelayedCallback(func() {
+		env.UpdateWorkflow("banner", "banner", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
+			if err != nil {
+				t.Error(err)
+			}
+			result := value.(Event)
+			if result.QRBanner != "Meet our team" || result.Revision != 1 {
+				t.Errorf("banner=%+v", result)
+			}
+			checked = true
+			env.SetContinueAsNewSuggested(true)
+		}}, "  Meet our team  ")
+	}, time.Second)
+	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
+	var continuation *workflow.ContinueAsNewError
+	if !errors.As(env.GetWorkflowError(), &continuation) {
+		t.Fatal(env.GetWorkflowError())
+	}
+	var state EventState
+	if err := converter.GetDefaultDataConverter().FromPayloads(continuation.Input, &state); err != nil {
+		t.Fatal(err)
+	}
+	if !checked || state.Event.QRBanner != "Meet our team" || state.Event.Revision != 1 || !reflect.DeepEqual(state.Event.Form, &form) {
+		t.Fatalf("schema/banner lost: %+v", state.Event)
+	}
+}
+
+func TestShardContinueAsNewPreservesCustomAnswers(t *testing.T) {
+	suite := testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+	env.SetContinueAsNewSuggested(true)
+	lead := Lead{Email: "p@example.com", Sequence: 2, Answers: []Answer{{FieldID: "topics", Values: []string{"Go", "Cloud"}}}}
+	env.ExecuteWorkflow(ParticipantShardWorkflow, ShardState{EventID: "test", Leads: []Lead{lead}, LastSequence: 2})
+	var continuation *workflow.ContinueAsNewError
+	if !errors.As(env.GetWorkflowError(), &continuation) {
+		t.Fatal(env.GetWorkflowError())
+	}
+	var state ShardState
+	if err := converter.GetDefaultDataConverter().FromPayloads(continuation.Input, &state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Leads) != 1 || !reflect.DeepEqual(state.Leads[0].Answers, lead.Answers) {
+		t.Fatalf("custom answers lost: %+v", state)
 	}
 }

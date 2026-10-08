@@ -12,6 +12,7 @@ import (
 	enums "go.temporal.io/api/enums/v1"
 	workflowpb "go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/mocks"
 )
 
@@ -42,6 +43,35 @@ func TestTemporalDirectoryQueriesOnlyRunningAndCompletedEvents(t *testing.T) {
 	events, cursor, err := NewTemporalGateway(c, "events").List(context.Background(), "")
 	if err != nil || len(events) != 2 || cursor != base64.RawURLEncoding.EncodeToString(response.NextPageToken) {
 		t.Fatalf("directory: events=%v cursor=%q error=%v", events, cursor, err)
+	}
+	c.AssertExpectations(t)
+}
+
+func TestBannerUpdateIDsAllowReturningToPreviousMessage(t *testing.T) {
+	c := &mocks.Client{}
+	seen := make(map[string]bool)
+	for _, banner := range []string{"First", "Second", "First"} {
+		handle := &mocks.WorkflowUpdateHandle{}
+		handle.On("Get", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+			*args[1].(*tracker.Event) = tracker.Event{ID: "test", QRBanner: banner}
+		}).Return(nil).Once()
+		options := mock.MatchedBy(func(input client.UpdateWorkflowOptions) bool {
+			return input.WorkflowID == "event/test" && input.UpdateName == "banner" && input.WaitForStage == client.WorkflowUpdateStageCompleted && len(input.Args) == 1 && input.Args[0] == banner && input.UpdateID != ""
+		})
+		c.On("UpdateWorkflow", mock.Anything, options).Run(func(args mock.Arguments) {
+			id := args[1].(client.UpdateWorkflowOptions).UpdateID
+			if seen[id] {
+				t.Errorf("banner update reused ID %q", id)
+			}
+			seen[id] = true
+		}).Return(handle, nil).Once()
+	}
+	g := NewTemporalGateway(c, "events")
+	for _, banner := range []string{"First", "Second", "First"} {
+		event, err := g.Banner(context.Background(), "test", banner)
+		if err != nil || event.QRBanner != banner {
+			t.Fatalf("banner update: %#v %v", event, err)
+		}
 	}
 	c.AssertExpectations(t)
 }

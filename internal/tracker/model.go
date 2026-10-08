@@ -39,6 +39,8 @@ type Event struct {
 	Revision    int64      `json:"revision"`
 	Busy        bool       `json:"busy"`
 	Shards      []string   `json:"shards"`
+	Form        *Form      `json:"form,omitempty"`
+	QRBanner    string     `json:"qrBanner,omitempty"`
 }
 
 func (e Event) At(now time.Time) Event {
@@ -56,6 +58,8 @@ type CreateEvent struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	EndDate     string `json:"endDate"`
+	Form        *Form  `json:"form,omitempty"`
+	QRBanner    string `json:"qrBanner,omitempty"`
 }
 
 func NewEvent(id, employee string, input CreateEvent, now time.Time) (Event, error) {
@@ -75,15 +79,28 @@ func NewEvent(id, employee string, input CreateEvent, now time.Time) (Event, err
 	if !closes.After(now) {
 		return Event{}, errors.New("end date has already passed in UTC")
 	}
-	return Event{ID: id, Name: input.Name, Description: input.Description, EndDate: input.EndDate, CreatedBy: employee, CreatedAt: now.UTC(), ClosesAt: closes, CompletesAt: closes.AddDate(0, 0, 7), Shards: []string{}, Status: "open"}, nil
+	form := DefaultForm()
+	if input.Form != nil {
+		form = *input.Form
+	}
+	form, err = form.Normalize()
+	if err != nil {
+		return Event{}, err
+	}
+	banner, err := NormalizeBanner(input.QRBanner)
+	if err != nil {
+		return Event{}, err
+	}
+	return Event{ID: id, Name: input.Name, Description: input.Description, EndDate: input.EndDate, CreatedBy: employee, CreatedAt: now.UTC(), ClosesAt: closes, CompletesAt: closes.AddDate(0, 0, 7), Shards: []string{}, Status: "open", Form: &form, QRBanner: banner}, nil
 }
 
 type Submission struct {
-	Name      string `json:"name"`
-	Role      string `json:"role"`
-	Email     string `json:"email"`
-	Reason    string `json:"reason"`
-	RequestID string `json:"requestId"`
+	Name      string   `json:"name"`
+	Role      string   `json:"role"`
+	Email     string   `json:"email"`
+	Reason    string   `json:"reason"`
+	RequestID string   `json:"requestId"`
+	Answers   []Answer `json:"answers,omitempty"`
 }
 
 func (s Submission) Normalize() (Submission, error) {
@@ -125,6 +142,7 @@ type Lead struct {
 	LastSubmittedAt  time.Time `json:"lastSubmittedAt"`
 	Sequence         int64     `json:"sequence"`
 	RequestID        string    `json:"requestId"`
+	Answers          []Answer  `json:"answers,omitempty"`
 }
 
 type EventState struct {
@@ -144,6 +162,12 @@ func (s Submission) Digest() string {
 		data.WriteString(strconv.Itoa(len(value)))
 		data.WriteByte(':')
 		data.WriteString(value)
+	}
+	if len(s.Answers) > 0 {
+		// The ordered slice gives retries a stable digest without changing legacy digests.
+		encoded, _ := json.Marshal(s.Answers) //workflowcheck:ignore
+		data.WriteString("answers:")
+		data.Write(encoded)
 	}
 	sum := sha256.Sum256([]byte(data.String()))
 	return hex.EncodeToString(sum[:])

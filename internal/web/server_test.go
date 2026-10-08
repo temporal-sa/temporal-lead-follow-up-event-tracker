@@ -29,6 +29,8 @@ type fakeGateway struct {
 	queryCalls  int
 	queryHook   func(*fakeGateway)
 	pageCalls   int
+	banners     []string
+	bannerError error
 }
 
 func (g *fakeGateway) Create(_ context.Context, event tracker.Event) error {
@@ -51,6 +53,14 @@ func (g *fakeGateway) Submit(_ context.Context, _ string, input tracker.Submissi
 }
 func (g *fakeGateway) End(context.Context, string) (tracker.Event, error) {
 	g.event.Status = "ended"
+	return g.event, nil
+}
+func (g *fakeGateway) Banner(_ context.Context, _ string, banner string) (tracker.Event, error) {
+	g.banners = append(g.banners, banner)
+	if g.bannerError != nil {
+		return tracker.Event{}, g.bannerError
+	}
+	g.event.QRBanner = banner
 	return g.event, nil
 }
 func (g *fakeGateway) Page(_ context.Context, id string, offset, limit int) (tracker.ShardPage, error) {
@@ -108,13 +118,16 @@ func TestPublicEventDoesNotLeakEmployeeOrParticipantState(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body) != 6 {
+	if len(body) != 7 {
 		t.Fatalf("public fields = %#v", body)
 	}
-	for _, key := range []string{"createdBy", "createdAt", "count", "shards", "revision", "busy", "completesAt"} {
+	for _, key := range []string{"createdBy", "createdAt", "count", "shards", "revision", "busy", "completesAt", "qrBanner"} {
 		if _, ok := body[key]; ok {
 			t.Errorf("public event leaked %s", key)
 		}
+	}
+	if _, ok := body["form"].(map[string]any); !ok {
+		t.Fatalf("public default form missing: %#v", body)
 	}
 	if w.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal("public response may be cached")

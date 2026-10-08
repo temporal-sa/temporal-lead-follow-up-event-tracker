@@ -2,7 +2,9 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"time"
@@ -21,6 +23,7 @@ type Gateway interface {
 	Event(context.Context, string) (tracker.Event, error)
 	Submit(context.Context, string, tracker.Submission) error
 	End(context.Context, string) (tracker.Event, error)
+	Banner(context.Context, string, string) (tracker.Event, error)
 	Page(context.Context, string, int, int) (tracker.ShardPage, error)
 	Health(context.Context) error
 }
@@ -110,6 +113,23 @@ func (g *temporalGateway) End(ctx context.Context, id string) (tracker.Event, er
 	handle, err := g.client.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
 		WorkflowID: tracker.EventID(id), UpdateID: "end-event", UpdateName: "end",
 		WaitForStage: client.WorkflowUpdateStageCompleted,
+	})
+	if err != nil {
+		return event, err
+	}
+	err = handle.Get(ctx, &event)
+	return event, err
+}
+
+func (g *temporalGateway) Banner(ctx context.Context, id, banner string) (tracker.Event, error) {
+	var event tracker.Event
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return event, err
+	}
+	handle, err := g.client.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+		WorkflowID: tracker.EventID(id), UpdateID: "banner-" + hex.EncodeToString(token[:]), UpdateName: "banner",
+		Args: []any{banner}, WaitForStage: client.WorkflowUpdateStageCompleted,
 	})
 	if err != nil {
 		return event, err

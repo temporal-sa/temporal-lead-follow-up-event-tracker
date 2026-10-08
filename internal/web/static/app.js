@@ -75,6 +75,7 @@
     render("participant-template");
     get("event-name").textContent = event.name;
     setDescription("event-description", event.description);
+    get("participant-intro").hidden = Boolean(event.description);
     if (event.status !== "open") {
       get("participant-form").hidden = true;
       get("participant-intro").hidden = true;
@@ -83,23 +84,20 @@
     }
     let attempt = null;
     let submitting = false;
+    const navigator = EventForms.mountParticipant(get("participant-fields"), event.form);
     get("participant-form").addEventListener("submit", async (submission) => {
       submission.preventDefault();
       if (submitting) return;
-      const form = submission.currentTarget;
-      if (!form.reportValidity()) return;
-      const fields = new FormData(form);
-      const body = Object.fromEntries(["name", "role", "email", "reason"].map((key) => [key, String(fields.get(key) || "").trim()]));
-      if (!body.name || !body.role) {
-        feedback("participant-feedback", "Please enter your name and title / role.", "error", true);
-        return;
-      }
+      const answers = navigator.advance();
+      feedback("participant-feedback", "");
+      if (answers === null) return;
+      const body = { answers };
       const key = JSON.stringify(body);
       if (!attempt || attempt.key !== key) attempt = { key, id: crypto.randomUUID() };
       body.requestId = attempt.id;
       submitting = true;
       get("participant-fields").disabled = true;
-      get("participant-submit").textContent = "Saving your details…";
+      navigator.setSubmitting(true);
       feedback("participant-feedback", "Saving your details…");
       try {
         await post(`/api/events/${encodeURIComponent(id)}/participants`, body);
@@ -113,7 +111,7 @@
       } finally {
         submitting = false;
         get("participant-fields").disabled = false;
-        get("participant-submit").textContent = "Request a follow-up →";
+        navigator.setSubmitting(false);
       }
     });
   }
@@ -178,6 +176,10 @@
       if (!hidden) get("create-name").focus();
     });
     get("cancel-create").addEventListener("click", hideCreate);
+    const formBuilder = EventForms.builder(get("form-builder"));
+    get("create-qr-banner").addEventListener("input", () => {
+      get("create-banner-preview").textContent = get("create-qr-banner").value.trim() || "Scan to keep the conversation going.";
+    });
     get("create-end-date").min = new Date().toISOString().slice(0, 10);
     get("create-end-date").addEventListener("change", () => {
       const date = new Date(`${get("create-end-date").value}T00:00:00Z`);
@@ -188,9 +190,12 @@
     let creating = false;
     get("create-form").addEventListener("submit", async (submission) => {
       submission.preventDefault();
-      if (creating || !submission.currentTarget.reportValidity()) return;
+      if (creating) return;
+      const formProblem = formBuilder.validate();
+      if (formProblem) { feedback("create-feedback", formProblem, "error", true); return; }
+      if (!submission.currentTarget.reportValidity()) return;
       const values = new FormData(submission.currentTarget);
-      const body = { name: String(values.get("name") || "").trim(), description: String(values.get("description") || "").trim(), endDate: values.get("endDate") };
+      const body = { name: String(values.get("name") || "").trim(), description: String(values.get("description") || "").trim(), endDate: values.get("endDate"), form: formBuilder.value(), qrBanner: get("create-qr-banner").value.trim() };
       if (!body.name) {
         feedback("create-feedback", "Please enter an event name.", "error", true);
         return;
@@ -238,6 +243,19 @@
     };
     refreshSummary();
     get("detail-qr").href = `/admin/events/${encodeURIComponent(id)}/qr`;
+    get("detail-form-preview").href = `/events/${encodeURIComponent(id)}`;
+    get("detail-banner").value = event.qrBanner || "";
+    get("banner-form").addEventListener("submit", async (submission) => {
+      submission.preventDefault();
+      get("banner-save").disabled = true;
+      feedback("banner-feedback", "Saving display message…");
+      try {
+        event = await post(`${url}/banner`, { banner: get("detail-banner").value.trim() });
+        refreshSummary();
+        feedback("banner-feedback", "QR display message saved.", "success");
+      } catch (error) { feedback("banner-feedback", failure(error), "error", true); }
+      finally { get("banner-save").disabled = false; }
+    });
     get("detail-copy").addEventListener("click", async () => {
       const link = `${location.origin}/events/${encodeURIComponent(id)}`;
       try {
@@ -298,11 +316,14 @@
     let loading = false;
     let shown = false;
     const body = get("leads-body");
+    const responseFields = EventForms.fields(event.form);
+    responseFields.forEach((field) => { const header = node("th", "", field.label); header.scope = "col"; get("leads-head").append(header); });
+    const dateHeader = node("th", "", "Last submitted · UTC"); dateHeader.scope = "col"; get("leads-head").append(dateHeader);
     const renderLead = (lead) => {
       const row = node("tr");
       const cells = [
-        ["Name", lead.name, ""], ["Title / role", lead.role, ""], ["Email", lead.email, ""],
-        ["Follow-up reason", lead.reason || "—", "reason-cell"], ["Last submitted · UTC", dateText(lead.lastSubmittedAt), "date-cell"],
+        ...responseFields.map((field) => [field.label, EventForms.answerText(field, lead), "reason-cell"]),
+        ["Last submitted · UTC", dateText(lead.lastSubmittedAt), "date-cell"],
       ];
       cells.forEach(([label, value, className]) => {
         const cell = node("td", className, value);

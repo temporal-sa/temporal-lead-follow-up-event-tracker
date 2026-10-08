@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/temporal-sa/temporal-lead-follow-up-event-tracker/internal/qrcode"
 	"github.com/temporal-sa/temporal-lead-follow-up-event-tracker/internal/tracker"
@@ -104,6 +105,7 @@ func newHandler(config Config, gateway Gateway, authTransport http.RoundTripper)
 	mux.HandleFunc("POST /api/admin/events", s.admin(s.createEvent))
 	mux.HandleFunc("GET /api/admin/events/{id}", s.admin(s.adminEvent))
 	mux.HandleFunc("POST /api/admin/events/{id}/end", s.admin(s.endEvent))
+	mux.HandleFunc("POST /api/admin/events/{id}/banner", s.admin(s.banner))
 	mux.HandleFunc("GET /api/admin/events/{id}/participants", s.admin(s.participants))
 	mux.HandleFunc("GET /api/admin/events/{id}/export.csv", s.admin(s.export))
 	mux.HandleFunc("GET /admin/events/{id}/qr", s.admin(s.qrPage))
@@ -194,13 +196,14 @@ func (s *server) publicEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, struct {
-		ID          string    `json:"id"`
-		Name        string    `json:"name"`
-		Description string    `json:"description"`
-		EndDate     string    `json:"endDate"`
-		ClosesAt    time.Time `json:"closesAt"`
-		Status      string    `json:"status"`
-	}{event.ID, event.Name, event.Description, event.EndDate, event.ClosesAt, event.Status})
+		ID          string       `json:"id"`
+		Name        string       `json:"name"`
+		Description string       `json:"description"`
+		EndDate     string       `json:"endDate"`
+		ClosesAt    time.Time    `json:"closesAt"`
+		Status      string       `json:"status"`
+		Form        tracker.Form `json:"form"`
+	}{event.ID, event.Name, event.Description, event.EndDate, event.ClosesAt, event.Status, event.EffectiveForm()})
 }
 
 func (s *server) submit(w http.ResponseWriter, r *http.Request) {
@@ -213,14 +216,14 @@ func (s *server) submit(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &input, false) {
 		return
 	}
-	input, err = input.Normalize()
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
 	event, err := s.gateway.Event(r.Context(), id)
 	if err != nil {
 		handleError(w, err)
+		return
+	}
+	input, err = input.NormalizeForEvent(event)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	// An ended, still-running event can acknowledge a previously saved request.
@@ -315,6 +318,40 @@ func (s *server) endEvent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, event)
 }
 
+func (s *server) banner(w http.ResponseWriter, r *http.Request) {
+	id, err := eventID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var body struct {
+		Banner string `json:"banner"`
+	}
+	if !s.decode(w, r, &body, true) {
+		return
+	}
+	body.Banner = strings.TrimSpace(body.Banner)
+	if utf8.RuneCountInString(body.Banner) > 500 {
+		writeError(w, http.StatusBadRequest, "QR banner must be 500 characters or fewer.")
+		return
+	}
+	existing, err := s.gateway.Event(r.Context(), id)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if existing.Status == "archived" {
+		writeError(w, http.StatusGone, "This event has completed; its QR banner cannot be changed.")
+		return
+	}
+	event, err := s.gateway.Banner(r.Context(), id, body.Banner)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, event)
+}
+
 func (s *server) decode(w http.ResponseWriter, r *http.Request, target any, requireOrigin bool) bool {
 	origin := r.Header.Get("Origin")
 	if (requireOrigin && origin == "") || (origin != "" && origin != s.config.PublicURL) || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
@@ -326,7 +363,7 @@ func (s *server) decode(w http.ResponseWriter, r *http.Request, target any, requ
 		writeError(w, http.StatusUnsupportedMediaType, "Use application/json.")
 		return false
 	}
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024))
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256*1024))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid JSON request.")
@@ -340,7 +377,9 @@ func (s *server) decode(w http.ResponseWriter, r *http.Request, target any, requ
 	return true
 }
 
-var qrTemplate = template.Must(template.New("qr").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Event QR code</title><link rel="stylesheet" href="/static/qr.css"></head><body><img src="{{.}}" alt="Scan to open the event follow-up form"></body></html>`))
+var qrTemplate = template.Must(template.New("qr").Parse(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.Name}} · Temporal</title><link rel="stylesheet" href="/static/qr.css"></head>
+<body><main class="qr-display"><div class="qr-copy"><img class="brand" src="/static/temporal-logo.svg" alt="Temporal"><p class="eyebrow">LET’S KEEP THE CONVERSATION GOING</p><h1>{{.Name}}</h1><p class="banner">{{.Banner}}</p><p class="qr-instruction">Open your camera. Scan the code.<br>Tell us what you’d like to explore.</p></div><div class="qr-panel"><div class="qr-frame"><img class="qr-code" src="{{.ImageURL}}" alt="Scan to open the event follow-up form"></div><p class="qr-caption">YOUR NEXT CONVERSATION STARTS HERE <span aria-hidden="true">↗</span></p></div></main></body></html>`))
 
 func (s *server) qrPage(w http.ResponseWriter, r *http.Request) {
 	event, err := s.getEvent(r)
@@ -348,8 +387,14 @@ func (s *server) qrPage(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	banner := event.QRBanner
+	if strings.TrimSpace(banner) == "" {
+		banner = "Scan to stay in touch."
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = qrTemplate.Execute(w, "/admin/events/"+event.ID+"/qr.png")
+	_ = qrTemplate.Execute(w, struct {
+		Name, Banner, ImageURL string
+	}{event.Name, banner, "/admin/events/" + event.ID + "/qr.png"})
 }
 
 func (s *server) qrImage(w http.ResponseWriter, r *http.Request) {

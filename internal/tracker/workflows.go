@@ -33,7 +33,7 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 			return "", err
 		}
 		defer mutex.Unlock()
-		input, err := input.Normalize()
+		input, err := input.NormalizeForEvent(state.Event)
 		if err != nil {
 			return "", temporal.NewApplicationError(err.Error(), "Invalid")
 		}
@@ -57,7 +57,12 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 			return "", err
 		}
 		if existing.Lead != nil && existing.Lead.RequestID == input.RequestID {
-			if existing.Lead.Name != input.Name || existing.Lead.Role != input.Role || existing.Lead.Reason != input.Reason {
+			changed := existing.Lead.Name != input.Name || existing.Lead.Role != input.Role || existing.Lead.Reason != input.Reason
+			if state.Event.Form != nil {
+				prior := Submission{Name: existing.Lead.Name, Role: existing.Lead.Role, Email: existing.Lead.Email, Reason: existing.Lead.Reason, Answers: existing.Lead.Answers}
+				changed = prior.Digest() != digest
+			}
+			if changed {
 				return "", temporal.NewApplicationError("request ID was already used for different details", "Invalid")
 			}
 			return "saved", nil
@@ -65,7 +70,7 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 		state.Sequence++
 		state.Event.Revision++
 		now := workflow.Now(ctx)
-		lead := Lead{Name: input.Name, Role: input.Role, Email: input.Email, Reason: input.Reason, FirstSubmittedAt: now, LastSubmittedAt: now, Sequence: state.Sequence, RequestID: input.RequestID}
+		lead := Lead{Name: input.Name, Role: input.Role, Email: input.Email, Reason: input.Reason, Answers: input.Answers, FirstSubmittedAt: now, LastSubmittedAt: now, Sequence: state.Sequence, RequestID: input.RequestID}
 		if existing.Lead != nil {
 			lead.FirstSubmittedAt = existing.Lead.FirstSubmittedAt
 		}
@@ -137,6 +142,25 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 		}
 		return state.Event.At(workflow.Now(ctx)), nil
 	}, workflow.UpdateHandlerOptions{Validator: validator}); err != nil {
+		return Event{}, err
+	}
+	// Registering an additional handler emits no commands and preserves existing histories.
+	if err := workflow.SetUpdateHandlerWithOptions(ctx, "banner", func(ctx workflow.Context, input string) (Event, error) {
+		banner, err := NormalizeBanner(input)
+		if err != nil {
+			return Event{}, temporal.NewApplicationError(err.Error(), "Invalid")
+		}
+		if err := mutex.Lock(ctx); err != nil {
+			return Event{}, err
+		}
+		defer mutex.Unlock()
+		if state.Event.QRBanner != banner {
+			state.Event.QRBanner = banner
+			state.Event.Revision++
+			operations++
+		}
+		return state.Event.At(workflow.Now(ctx)), nil
+	}, workflow.UpdateHandlerOptions{Validator: func(string) error { return validator() }}); err != nil {
 		return Event{}, err
 	}
 	// Preserve the extra timer only when replaying histories from before this change.
