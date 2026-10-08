@@ -46,19 +46,24 @@ func (g *temporalGateway) Create(ctx context.Context, event tracker.Event) error
 }
 
 func (g *temporalGateway) List(ctx context.Context, cursor string) ([]tracker.Event, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	token, err := base64.RawURLEncoding.DecodeString(cursor)
 	if err != nil {
 		return nil, "", errInvalidCursor
 	}
 	result, err := g.client.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
 		PageSize: 25, NextPageToken: token,
-		Query: "WorkflowType = 'EventWorkflow' AND ExecutionStatus != 'ContinuedAsNew'",
+		Query: "WorkflowType = 'EventWorkflow' AND ExecutionStatus IN ('Running', 'Completed')",
 	})
 	if err != nil {
 		return nil, "", err
 	}
 	events := make([]tracker.Event, 0, len(result.Executions))
 	for _, execution := range result.Executions {
+		if execution.Status != enums.WORKFLOW_EXECUTION_STATUS_RUNNING && execution.Status != enums.WORKFLOW_EXECUTION_STATUS_COMPLETED {
+			continue
+		}
 		id := strings.TrimPrefix(execution.GetExecution().GetWorkflowId(), "event/")
 		event, err := g.Event(ctx, id)
 		var missing *serviceerror.NotFound
@@ -74,6 +79,8 @@ func (g *temporalGateway) List(ctx context.Context, cursor string) ([]tracker.Ev
 }
 
 func (g *temporalGateway) Event(ctx context.Context, id string) (tracker.Event, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	var event tracker.Event
 	result, err := g.client.QueryWorkflow(ctx, tracker.EventID(id), "", "event")
 	if err != nil {
@@ -112,6 +119,8 @@ func (g *temporalGateway) End(ctx context.Context, id string) (tracker.Event, er
 }
 
 func (g *temporalGateway) Page(ctx context.Context, shardID string, offset, limit int) (tracker.ShardPage, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	var page tracker.ShardPage
 	result, err := g.client.QueryWorkflow(ctx, shardID, "", "page", offset, limit)
 	if err != nil {

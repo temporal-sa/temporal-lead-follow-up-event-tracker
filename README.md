@@ -87,7 +87,10 @@ recommends it. Participant children have `ABANDON` parent-close policy and stabl
 IDs; they remain alive when the coordinator continues. At final completion, the
 coordinator signals each shard to finish after its handlers drain. Temporal
 Visibility supplies the employee event directory, so newly created events may
-take a moment to appear there; direct links work immediately.
+take a moment to appear there; direct links work immediately. The directory
+includes running and successfully completed events. Terminated, canceled, failed,
+timed-out, and continued-as-new runs are excluded. Workflow queries time out
+after five seconds, and a directory request is limited to ten seconds.
 
 The 5,000 limit counts unique participants, not repeat submissions. Text-heavy
 events shard earlier to stay below Temporal payload limits. Participant and event
@@ -134,7 +137,11 @@ The worker logs to stdout and shuts down gracefully on SIGINT/SIGTERM.
 [deploy/demo-project.yaml](deploy/demo-project.yaml) is a sample platform manifest.
 It exposes the web component publicly (`temporalAuthRequired: false`) so visitors
 can submit without employee login; the application protects admin pages and APIs.
-The platform injects Temporal credentials and manages worker versioning.
+The platform injects Temporal credentials. The demo uses an unversioned worker
+on the stable `event-leads-unversioned` task queue. Catalog rollouts replace the
+runtime namespace, so pinned workers would strand events and retained queries
+when their old namespace is removed. The fresh task queue also avoids the previous
+queue's versioned routing configuration.
 The sample points `AUTH_VERIFY_URL` at the catalog's internal Kubernetes service.
 Employee login still uses the public catalog URL. No project auth secret is needed.
 
@@ -150,13 +157,15 @@ Before applying the manifest:
 2. Ensure the web component can reach the catalog service configured in
    `AUTH_VERIFY_URL` and that the catalog's employee SSO is configured.
 3. Apply the sample through cluster-gitops-config's normal project flow, and verify
-   the serving web image and current Worker Deployment Version.
+   the serving web and worker images and their readiness.
 
 The app does not create OAuth clients or issue its own employee sessions. Shared
 SSO requires the deployed hostname to be under `.tmprl-demo.cloud`. Completed
-workflow queries require a compatible worker, even during retention; keep old
-pinned workers available for the desired export period when rolling out changes.
-Do not replace live workflow code without replay checks or versioning.
+workflow queries require a compatible worker, even during retention. Keep changes
+replay-compatible with Temporal patches and recorded-history replay checks.
+The optional `TEMPORAL_REPLAY_HISTORY` test can replay a downloaded history file.
+Previously pinned workflows still require their original worker deployment;
+changing the task queue does not migrate those executions.
 
 This repository prepares deployment artifacts; it does not change cluster-gitops
 or deploy infrastructure automatically.
