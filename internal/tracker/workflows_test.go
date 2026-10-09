@@ -461,3 +461,58 @@ func TestShardContinueAsNewPreservesCustomAnswers(t *testing.T) {
 		t.Fatalf("custom answers lost: %+v", state)
 	}
 }
+
+func TestDeleteKeepsTheEventOutOfLaterSubmissions(t *testing.T) {
+	suite := testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+	event := testEvent()
+	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
+	deleted := false
+	rejected := false
+	env.RegisterDelayedCallback(func() {
+		env.UpdateWorkflow("delete", "delete-event", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			result := value.(Event)
+			if result.DeletedAt == nil || result.Revision != 1 {
+				t.Errorf("delete=%+v", result)
+			}
+			deleted = true
+		}})
+	}, time.Second)
+	env.RegisterDelayedCallback(func() {
+		env.UpdateWorkflow("submit", "after-delete", &testsuite.TestUpdateCallback{
+			OnReject: func(err error) { rejected = closedUpdate(t, err) },
+			OnComplete: func(_ any, err error) {
+				if err == nil {
+					t.Error("deleted event accepted a submission")
+					return
+				}
+				rejected = closedUpdate(t, err)
+			},
+		}, Submission{Name: "Pat", Role: "Engineer", Email: "p@example.com", RequestID: "12345678-1234-1234"})
+	}, 2*time.Second)
+	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	var result Event
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if !deleted || !rejected || result.DeletedAt == nil || result.Count != 0 {
+		t.Fatalf("deleted=%t rejected=%t result=%+v", deleted, rejected, result)
+	}
+}
+
+func closedUpdate(t *testing.T, err error) bool {
+	t.Helper()
+	var app *temporal.ApplicationError
+	if !errors.As(err, &app) || app.Type() != "Closed" {
+		t.Errorf("update error=%v", err)
+		return false
+	}
+	return true
+}

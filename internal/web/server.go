@@ -105,6 +105,7 @@ func newHandler(config Config, gateway Gateway, authTransport http.RoundTripper)
 	mux.HandleFunc("POST /api/admin/events", s.admin(s.createEvent))
 	mux.HandleFunc("GET /api/admin/events/{id}", s.admin(s.adminEvent))
 	mux.HandleFunc("POST /api/admin/events/{id}/end", s.admin(s.endEvent))
+	mux.HandleFunc("POST /api/admin/events/{id}/delete", s.admin(s.deleteEvent))
 	mux.HandleFunc("POST /api/admin/events/{id}/banner", s.admin(s.banner))
 	mux.HandleFunc("GET /api/admin/events/{id}/participants", s.admin(s.participants))
 	mux.HandleFunc("GET /api/admin/events/{id}/export.csv", s.admin(s.export))
@@ -187,7 +188,18 @@ func (s *server) getEvent(r *http.Request) (tracker.Event, error) {
 	if err != nil {
 		return tracker.Event{}, &inputError{err.Error()}
 	}
-	return s.gateway.Event(r.Context(), id)
+	return s.visibleEvent(r.Context(), id)
+}
+
+func (s *server) visibleEvent(ctx context.Context, id string) (tracker.Event, error) {
+	event, err := s.gateway.Event(ctx, id)
+	if err != nil || event.DeletedAt != nil {
+		if err == nil {
+			err = errDeleted
+		}
+		return tracker.Event{}, err
+	}
+	return event, nil
 }
 
 func (s *server) publicEvent(w http.ResponseWriter, r *http.Request) {
@@ -217,7 +229,7 @@ func (s *server) submit(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &input, false) {
 		return
 	}
-	event, err := s.gateway.Event(r.Context(), id)
+	event, err := s.visibleEvent(r.Context(), id)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -255,9 +267,13 @@ func (s *server) listEvents(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	if events == nil {
-		events = []tracker.Event{}
+	visible := make([]tracker.Event, 0, len(events))
+	for _, event := range events {
+		if event.DeletedAt == nil {
+			visible = append(visible, event)
+		}
 	}
+	events = visible
 	writeJSON(w, http.StatusOK, struct {
 		Events     []tracker.Event `json:"events"`
 		NextCursor string          `json:"nextCursor"`
@@ -307,7 +323,7 @@ func (s *server) endEvent(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &body, true) {
 		return
 	}
-	existing, err := s.gateway.Event(r.Context(), id)
+	existing, err := s.visibleEvent(r.Context(), id)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -322,6 +338,23 @@ func (s *server) endEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, event)
+}
+
+func (s *server) deleteEvent(w http.ResponseWriter, r *http.Request) {
+	id, err := eventID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var body struct{}
+	if !s.decode(w, r, &body, true) {
+		return
+	}
+	if err := s.gateway.Delete(r.Context(), id); err != nil {
+		handleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *server) banner(w http.ResponseWriter, r *http.Request) {
@@ -341,7 +374,7 @@ func (s *server) banner(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "QR banner must be 500 characters or fewer.")
 		return
 	}
-	existing, err := s.gateway.Event(r.Context(), id)
+	existing, err := s.visibleEvent(r.Context(), id)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -437,6 +470,8 @@ func handleError(w http.ResponseWriter, err error) {
 		status, message = http.StatusConflict, errChanged.Error()
 	case errors.Is(err, errExpired):
 		status, message = http.StatusGone, errExpired.Error()
+	case errors.Is(err, errDeleted):
+		status, message = http.StatusNotFound, "This event was deleted."
 	case errors.As(err, &missing):
 		status, message = http.StatusNotFound, "Event not found or no longer retained."
 	case errors.As(err, &application):

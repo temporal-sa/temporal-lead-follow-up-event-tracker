@@ -14,6 +14,7 @@ import (
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/mocks"
+	"google.golang.org/grpc"
 )
 
 func TestTemporalDirectoryQueriesOnlyRunningAndCompletedEvents(t *testing.T) {
@@ -40,9 +41,79 @@ func TestTemporalDirectoryQueriesOnlyRunningAndCompletedEvents(t *testing.T) {
 		}
 	}
 	c.On("ListWorkflow", mock.Anything, mock.Anything).Return(response, nil).Once()
-	events, cursor, err := NewTemporalGateway(c, "events").List(context.Background(), "")
+	events, cursor, err := NewTemporalGateway(c, "events", "default").List(context.Background(), "")
 	if err != nil || len(events) != 2 || cursor != base64.RawURLEncoding.EncodeToString(response.NextPageToken) {
 		t.Fatalf("directory: events=%v cursor=%q error=%v", events, cursor, err)
+	}
+	c.AssertExpectations(t)
+}
+
+func TestListOmitsDeletedEvents(t *testing.T) {
+	c := &mocks.Client{}
+	response := &workflowservice.ListWorkflowExecutionsResponse{}
+	for _, id := range []string{"visible", "deleted"} {
+		response.Executions = append(response.Executions, &workflowpb.WorkflowExecutionInfo{Execution: &commonpb.WorkflowExecution{WorkflowId: tracker.EventID(id)}, Status: enums.WORKFLOW_EXECUTION_STATUS_RUNNING})
+		value := &mocks.Value{}
+		eventID := id
+		value.On("Get", mock.Anything).Run(func(args mock.Arguments) {
+			event := tracker.Event{ID: eventID, Name: eventID}
+			if eventID == "deleted" {
+				now := time.Now()
+				event.DeletedAt = &now
+			}
+			*args[0].(*tracker.Event) = event
+		}).Return(nil).Once()
+		c.On("QueryWorkflow", mock.Anything, tracker.EventID(id), "", "event").Return(value, nil).Once()
+	}
+	c.On("ListWorkflow", mock.Anything, mock.Anything).Return(response, nil).Once()
+	events, _, err := NewTemporalGateway(c, "events", "default").List(context.Background(), "")
+	if err != nil || len(events) != 1 || events[0].ID != "visible" {
+		t.Fatalf("directory: %#v %v", events, err)
+	}
+	c.AssertExpectations(t)
+}
+
+type closedExecutionDeleter struct {
+	workflowservice.WorkflowServiceClient
+	request *workflowservice.DeleteWorkflowExecutionRequest
+}
+
+func (d *closedExecutionDeleter) DeleteWorkflowExecution(_ context.Context, in *workflowservice.DeleteWorkflowExecutionRequest, _ ...grpc.CallOption) (*workflowservice.DeleteWorkflowExecutionResponse, error) {
+	d.request = in
+	return &workflowservice.DeleteWorkflowExecutionResponse{}, nil
+}
+
+func TestDeleteRunningEventRecordsTheUpdate(t *testing.T) {
+	c := &mocks.Client{}
+	c.On("DescribeWorkflowExecution", mock.Anything, "event/test", "").Return(&workflowservice.DescribeWorkflowExecutionResponse{
+		WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Status: enums.WORKFLOW_EXECUTION_STATUS_RUNNING},
+	}, nil).Once()
+	handle := &mocks.WorkflowUpdateHandle{}
+	now := time.Now().UTC()
+	handle.On("Get", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		*args[1].(*tracker.Event) = tracker.Event{ID: "test", DeletedAt: &now}
+	}).Return(nil).Once()
+	c.On("UpdateWorkflow", mock.Anything, mock.MatchedBy(func(input client.UpdateWorkflowOptions) bool {
+		return input.WorkflowID == "event/test" && input.UpdateName == "delete" && input.UpdateID == "delete-event" && input.WaitForStage == client.WorkflowUpdateStageCompleted
+	})).Return(handle, nil).Once()
+	if err := NewTemporalGateway(c, "events", "default").Delete(context.Background(), "test"); err != nil {
+		t.Fatal(err)
+	}
+	c.AssertExpectations(t)
+}
+
+func TestDeleteClosedEventRemovesTheExecution(t *testing.T) {
+	c := &mocks.Client{}
+	c.On("DescribeWorkflowExecution", mock.Anything, "event/test", "").Return(&workflowservice.DescribeWorkflowExecutionResponse{
+		WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Status: enums.WORKFLOW_EXECUTION_STATUS_COMPLETED},
+	}, nil).Once()
+	deleter := &closedExecutionDeleter{}
+	c.On("WorkflowService").Return(deleter).Once()
+	if err := NewTemporalGateway(c, "events", "leads").Delete(context.Background(), "test"); err != nil {
+		t.Fatal(err)
+	}
+	if deleter.request == nil || deleter.request.Namespace != "leads" || deleter.request.GetWorkflowExecution().GetWorkflowId() != "event/test" {
+		t.Fatalf("delete request = %#v", deleter.request)
 	}
 	c.AssertExpectations(t)
 }
@@ -66,7 +137,7 @@ func TestBannerUpdateIDsAllowReturningToPreviousMessage(t *testing.T) {
 			seen[id] = true
 		}).Return(handle, nil).Once()
 	}
-	g := NewTemporalGateway(c, "events")
+	g := NewTemporalGateway(c, "events", "default")
 	for _, banner := range []string{"First", "Second", "First"} {
 		event, err := g.Banner(context.Background(), "test", banner)
 		if err != nil || event.QRBanner != banner {
@@ -86,13 +157,13 @@ func TestTemporalQueriesHaveBoundedDeadlines(t *testing.T) {
 			})
 			if query == "event" {
 				c.On("QueryWorkflow", bounded, "event/test", "", query).Return(nil, context.DeadlineExceeded).Once()
-				_, err := NewTemporalGateway(c, "events").Event(context.Background(), "test")
+				_, err := NewTemporalGateway(c, "events", "default").Event(context.Background(), "test")
 				if err != context.DeadlineExceeded {
 					t.Fatal(err)
 				}
 			} else {
 				c.On("QueryWorkflow", bounded, "shard", "", query, 0, 100).Return(nil, context.DeadlineExceeded).Once()
-				_, err := NewTemporalGateway(c, "events").Page(context.Background(), "shard", 0, 100)
+				_, err := NewTemporalGateway(c, "events", "default").Page(context.Background(), "shard", 0, 100)
 				if err != context.DeadlineExceeded {
 					t.Fatal(err)
 				}

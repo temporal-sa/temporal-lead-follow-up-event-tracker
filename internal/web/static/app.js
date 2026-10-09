@@ -125,6 +125,7 @@
     let loaded = false;
     const list = get("event-list");
     const renderEvent = (event) => {
+      if (event.deletedAt) return;
       const card = node("a", "card event-card");
       card.href = `/admin/events/${encodeURIComponent(event.id)}`;
       const top = node("div", "event-card-top");
@@ -298,6 +299,23 @@
     const dialog = get("end-dialog");
     get("detail-end").addEventListener("click", () => dialog.showModal());
     get("cancel-end").addEventListener("click", () => dialog.close());
+    const deleteDialog = get("delete-dialog");
+    get("detail-delete").addEventListener("click", () => deleteDialog.showModal());
+    get("cancel-delete").addEventListener("click", () => deleteDialog.close());
+    get("confirm-delete").addEventListener("click", async () => {
+      get("confirm-delete").disabled = true;
+      deleteDialog.close();
+      get("detail-delete").disabled = true;
+      feedback("detail-feedback", "Deleting event…");
+      try {
+        await post(`${url}/delete`, {});
+        location.assign("/admin");
+      } catch (error) {
+        feedback("detail-feedback", failure(error), "error", true);
+        get("detail-delete").disabled = false;
+        get("confirm-delete").disabled = false;
+      }
+    });
     get("confirm-end").addEventListener("click", async () => {
       get("confirm-end").disabled = true;
       dialog.close();

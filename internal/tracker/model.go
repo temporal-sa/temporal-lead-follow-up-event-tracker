@@ -34,6 +34,7 @@ type Event struct {
 	ClosesAt    time.Time  `json:"closesAt"`
 	CompletesAt time.Time  `json:"completesAt"`
 	EndedAt     *time.Time `json:"endedAt,omitempty"`
+	DeletedAt   *time.Time `json:"deletedAt,omitempty"`
 	Status      string     `json:"status"`
 	Count       int        `json:"count"`
 	Revision    int64      `json:"revision"`

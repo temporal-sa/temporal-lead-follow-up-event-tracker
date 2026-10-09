@@ -31,6 +31,8 @@ type fakeGateway struct {
 	pageCalls   int
 	banners     []string
 	bannerError error
+	deleted     []string
+	deleteError error
 }
 
 func (g *fakeGateway) Create(_ context.Context, event tracker.Event) error {
@@ -57,6 +59,15 @@ func (g *fakeGateway) IssueFlightPass(_ context.Context, eventID string, submiss
 func (g *fakeGateway) End(context.Context, string) (tracker.Event, error) {
 	g.event.Status = "ended"
 	return g.event, nil
+}
+func (g *fakeGateway) Delete(_ context.Context, id string) error {
+	g.deleted = append(g.deleted, id)
+	if g.deleteError != nil {
+		return g.deleteError
+	}
+	now := time.Now().UTC()
+	g.event.DeletedAt = &now
+	return nil
 }
 func (g *fakeGateway) Banner(_ context.Context, _ string, banner string) (tracker.Event, error) {
 	g.banners = append(g.banners, banner)
@@ -362,5 +373,38 @@ func TestQRIsEmployeeOnlyAndPNGGenerated(t *testing.T) {
 	body, _ := io.ReadAll(w.Body)
 	if w.Code != 200 || !strings.Contains(string(body), `src="/admin/events/demo/qr.png"`) {
 		t.Fatalf("QR page missing image: %s", body)
+	}
+}
+
+func TestDeleteRemovesEventFromTheAPI(t *testing.T) {
+	g := &fakeGateway{event: tracker.Event{ID: "demo", Name: "Conference", Status: "open"}}
+	h := testHandler(t, g)
+	w := request(t, h, "POST", "/api/admin/events/demo/delete", `{}`, "", "https://leads.tmprl-demo.cloud")
+	if w.Code != http.StatusUnauthorized || len(g.deleted) != 0 {
+		t.Fatalf("missing session: %d %s", w.Code, w.Body.String())
+	}
+	w = request(t, h, "POST", "/api/admin/events/demo/delete", `{}`, validSession, "")
+	if w.Code != http.StatusForbidden || len(g.deleted) != 0 {
+		t.Fatalf("missing origin: %d deleted=%v", w.Code, g.deleted)
+	}
+	w = request(t, h, "POST", "/api/admin/events/demo/delete", `{}`, validSession, "https://leads.tmprl-demo.cloud")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"deleted"`) || len(g.deleted) != 1 || g.deleted[0] != "demo" {
+		t.Fatalf("delete: %d %s calls=%v", w.Code, w.Body.String(), g.deleted)
+	}
+	w = request(t, h, "GET", "/api/events/demo", "", "", "")
+	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "This event was deleted.") {
+		t.Fatalf("public event: %d %s", w.Code, w.Body.String())
+	}
+	w = request(t, h, "GET", "/api/admin/events/demo", "", validSession, "")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("admin event: %d %s", w.Code, w.Body.String())
+	}
+	w = request(t, h, "GET", "/api/admin/events", "", validSession, "")
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "Conference") {
+		t.Fatalf("directory still lists deleted event: %s", w.Body.String())
+	}
+	w = request(t, h, "POST", "/api/events/demo/participants", `{"name":"Ada","role":"Engineer","email":"ada@example.com","requestId":"01234567-89ab-cdef-0123-456789abcdef"}`, "", "")
+	if w.Code != http.StatusNotFound || g.submission != nil {
+		t.Fatalf("deleted event accepted a submission: %d %s", w.Code, w.Body.String())
 	}
 }

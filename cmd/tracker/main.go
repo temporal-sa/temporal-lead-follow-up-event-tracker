@@ -88,7 +88,7 @@ func run() error {
 		AuthBaseURL:   env("AUTH_BASE_URL", "https://catalog.tmprl-demo.cloud"),
 		AuthVerifyURL: env("AUTH_VERIFY_URL", "https://catalog.tmprl-demo.cloud/_auth/verify"),
 		DevAuthEmail:  devEmail,
-	}, web.NewTemporalGateway(c, taskQueue))
+	}, web.NewTemporalGateway(c, taskQueue, options.Namespace))
 	if err != nil {
 		return err
 	}

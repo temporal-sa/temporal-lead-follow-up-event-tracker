@@ -28,11 +28,21 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 		}
 		return nil
 	}
+	// Deleted events stay in history, but updates other than delete itself are rejected.
+	accepting := func() error {
+		if state.Event.DeletedAt != nil {
+			return temporal.NewApplicationError("this event is no longer available", "Closed")
+		}
+		return validator()
+	}
 	if err := workflow.SetUpdateHandlerWithOptions(ctx, "submit", func(ctx workflow.Context, input Submission) (string, error) {
 		if err := mutex.Lock(ctx); err != nil {
 			return "", err
 		}
 		defer mutex.Unlock()
+		if state.Event.DeletedAt != nil {
+			return "", temporal.NewApplicationError("this event is no longer available", "Closed")
+		}
 		input, err := input.NormalizeForEvent(state.Event)
 		if err != nil {
 			return "", temporal.NewApplicationError(err.Error(), "Invalid")
@@ -126,7 +136,7 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 		operations++
 		state.Event.Revision++
 		return "saved", nil
-	}, workflow.UpdateHandlerOptions{Validator: func(Submission) error { return validator() }}); err != nil {
+	}, workflow.UpdateHandlerOptions{Validator: func(Submission) error { return accepting() }}); err != nil {
 		return Event{}, err
 	}
 	if err := workflow.SetUpdateHandlerWithOptions(ctx, "end", func(ctx workflow.Context) (Event, error) {
@@ -134,6 +144,9 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 			return Event{}, err
 		}
 		defer mutex.Unlock()
+		if state.Event.DeletedAt != nil {
+			return Event{}, temporal.NewApplicationError("this event is no longer available", "Closed")
+		}
 		if state.Event.EndedAt == nil && workflow.Now(ctx).Before(state.Event.ClosesAt) {
 			now := workflow.Now(ctx)
 			state.Event.EndedAt = &now
@@ -141,7 +154,7 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 			operations++
 		}
 		return state.Event.At(workflow.Now(ctx)), nil
-	}, workflow.UpdateHandlerOptions{Validator: validator}); err != nil {
+	}, workflow.UpdateHandlerOptions{Validator: accepting}); err != nil {
 		return Event{}, err
 	}
 	// Registering an additional handler emits no commands and preserves existing histories.
@@ -154,13 +167,32 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 			return Event{}, err
 		}
 		defer mutex.Unlock()
+		if state.Event.DeletedAt != nil {
+			return Event{}, temporal.NewApplicationError("this event is no longer available", "Closed")
+		}
 		if state.Event.QRBanner != banner {
 			state.Event.QRBanner = banner
 			state.Event.Revision++
 			operations++
 		}
 		return state.Event.At(workflow.Now(ctx)), nil
-	}, workflow.UpdateHandlerOptions{Validator: func(string) error { return validator() }}); err != nil {
+	}, workflow.UpdateHandlerOptions{Validator: func(string) error { return accepting() }}); err != nil {
+		return Event{}, err
+	}
+	// Registering an additional handler emits no commands and preserves existing histories.
+	if err := workflow.SetUpdateHandlerWithOptions(ctx, "delete", func(ctx workflow.Context) (Event, error) {
+		if err := mutex.Lock(ctx); err != nil {
+			return Event{}, err
+		}
+		defer mutex.Unlock()
+		if state.Event.DeletedAt == nil {
+			now := workflow.Now(ctx)
+			state.Event.DeletedAt = &now
+			state.Event.Revision++
+			operations++
+		}
+		return state.Event.At(workflow.Now(ctx)), nil
+	}, workflow.UpdateHandlerOptions{Validator: validator}); err != nil {
 		return Event{}, err
 	}
 	// Preserve the extra timer only when replaying histories from before this change.

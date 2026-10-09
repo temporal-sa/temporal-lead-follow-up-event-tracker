@@ -203,7 +203,11 @@ func (s Service) event(ctx context.Context, id string) (Event, error) {
 	if err := result.Get(&event); err != nil {
 		return event, err
 	}
-	return event.At(time.Now()), nil
+	event = event.At(time.Now())
+	if event.DeletedAt != nil {
+		return Event{}, serviceerror.NewNotFound("event deleted")
+	}
+	return event, nil
 }
 
 func (s Service) queue() string {

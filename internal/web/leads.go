@@ -91,7 +91,7 @@ func (s *server) participants(w http.ResponseWriter, r *http.Request) {
 			cursor.Offset = 0
 		}
 	}
-	confirmed, err := s.gateway.Event(r.Context(), event.ID)
+	confirmed, err := s.visibleEvent(r.Context(), event.ID)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -133,7 +133,7 @@ func (s *server) export(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) csvSnapshot(ctx context.Context, id string) ([]byte, error) {
-	event, err := s.gateway.Event(ctx, id)
+	event, err := s.visibleEvent(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +191,7 @@ func (s *server) csvSnapshot(ctx context.Context, id string) ([]byte, error) {
 			}
 		}
 	}
-	confirmed, err := s.gateway.Event(ctx, id)
+	confirmed, err := s.visibleEvent(ctx, id)
 	if err != nil {
 		return nil, err
 	}

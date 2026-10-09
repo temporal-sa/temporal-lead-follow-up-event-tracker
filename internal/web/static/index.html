@@ -106,6 +106,7 @@
             <button class="button secondary" id="detail-copy" type="button">Copy form link</button>
             <button class="button secondary" id="detail-export" type="button">Export CSV <span aria-hidden="true">↓</span></button>
             <button class="button danger" id="detail-end" type="button">End event</button>
+            <button class="button danger" id="detail-delete" type="button">Delete event</button>
           </div>
           <p class="feedback" id="detail-feedback" role="status" tabindex="-1" hidden></p>
         </div>
@@ -120,6 +121,10 @@
         <dialog id="end-dialog" aria-labelledby="end-dialog-title" aria-describedby="end-dialog-description">
           <h2 id="end-dialog-title">End this event?</h2><p id="end-dialog-description">New responses will stop immediately. You can still view and export the responses already collected.</p>
           <div class="actions"><button class="button danger" id="confirm-end" type="button">End event</button><button class="button secondary" id="cancel-end" type="button">Keep event open</button></div>
+        </dialog>
+        <dialog id="delete-dialog" aria-labelledby="delete-dialog-title" aria-describedby="delete-dialog-description">
+          <h2 id="delete-dialog-title">Delete this event?</h2><p id="delete-dialog-description">It will disappear from your events. The form and QR code will no longer open.</p>
+          <div class="actions"><button class="button danger" id="confirm-delete" type="button">Delete event</button><button class="button secondary" id="cancel-delete" type="button">Keep event</button></div>
         </dialog>
       </section>
     </template>

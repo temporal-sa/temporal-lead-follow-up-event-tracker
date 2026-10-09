@@ -51,7 +51,7 @@ func TestIntegrationExportAfterWorkflowCompletion(t *testing.T) {
 	}
 	defer c.CancelWorkflow(context.Background(), tracker.EventID(id), "")
 	defer c.CancelWorkflow(context.Background(), tracker.ShardID(id, 0), "")
-	h := testHandler(t, NewTemporalGateway(c, id))
+	h := testHandler(t, NewTemporalGateway(c, id, "default"))
 	response := request(t, h, "POST", "/api/events/"+id+"/participants", `{"name":"Pat","role":"Engineer","email":"pat@example.com","reason":"Follow up","requestId":"retained-export-request"}`, "", "")
 	if response.Code != http.StatusOK {
 		t.Fatalf("submit: %d %s", response.Code, response.Body.String())
@@ -137,7 +137,7 @@ func TestIntegrationCustomFormDedupeBannerAndExportAfterWorkerRestart(t *testing
 		t.Fatal(err)
 	}
 	defer func() { w.Stop() }()
-	h := testHandler(t, NewTemporalGateway(c, queue))
+	h := testHandler(t, NewTemporalGateway(c, queue, "default"))
 	body, err := json.Marshal(tracker.CreateEvent{
 		Name: "Custom event", EndDate: time.Now().UTC().Add(24 * time.Hour).Format("2006-01-02"),
 		Form: customAPIForm(), QRBanner: "Meet the team.",

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/temporal-sa/temporal-lead-follow-up-event-tracker/internal/tracker"
+	commonpb "go.temporal.io/api/common/v1"
 	enums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
@@ -24,6 +25,7 @@ type Gateway interface {
 	Submit(context.Context, string, tracker.Submission) error
 	IssueFlightPass(context.Context, string, tracker.Submission) (string, error)
 	End(context.Context, string) (tracker.Event, error)
+	Delete(context.Context, string) error
 	Banner(context.Context, string, string) (tracker.Event, error)
 	Page(context.Context, string, int, int) (tracker.ShardPage, error)
 	Health(context.Context) error
@@ -32,13 +34,17 @@ type Gateway interface {
 type temporalGateway struct {
 	client    client.Client
 	taskQueue string
+	namespace string
 }
 
-func NewTemporalGateway(c client.Client, taskQueue string) Gateway {
+func NewTemporalGateway(c client.Client, taskQueue, namespace string) Gateway {
 	if taskQueue == "" {
 		taskQueue = tracker.DefaultTaskQueue
 	}
-	return &temporalGateway{client: c, taskQueue: taskQueue}
+	if namespace == "" {
+		namespace = "default"
+	}
+	return &temporalGateway{client: c, taskQueue: taskQueue, namespace: namespace}
 }
 
 func (g *temporalGateway) Create(ctx context.Context, event tracker.Event) error {
@@ -71,7 +77,7 @@ func (g *temporalGateway) List(ctx context.Context, cursor string) ([]tracker.Ev
 		id := strings.TrimPrefix(execution.GetExecution().GetWorkflowId(), "event/")
 		event, err := g.Event(ctx, id)
 		var missing *serviceerror.NotFound
-		if errors.As(err, &missing) {
+		if errors.As(err, &missing) || errors.Is(err, errDeleted) {
 			continue
 		}
 		if err != nil {
@@ -94,7 +100,11 @@ func (g *temporalGateway) Event(ctx context.Context, id string) (tracker.Event, 
 		return event, err
 	}
 	// Queries do not advance workflow time, so derive display status at request time.
-	return event.At(time.Now()), nil
+	event = event.At(time.Now())
+	if event.DeletedAt != nil {
+		return tracker.Event{}, errDeleted
+	}
+	return event, nil
 }
 
 func (g *temporalGateway) Submit(ctx context.Context, id string, submission tracker.Submission) error {
@@ -111,6 +121,35 @@ func (g *temporalGateway) Submit(ctx context.Context, id string, submission trac
 
 func (g *temporalGateway) IssueFlightPass(ctx context.Context, id string, submission tracker.Submission) (string, error) {
 	return tracker.EnsureFlightPass(ctx, g.client, g.taskQueue, id, submission)
+}
+
+func (g *temporalGateway) Delete(ctx context.Context, id string) error {
+	described, err := g.client.DescribeWorkflowExecution(ctx, tracker.EventID(id), "")
+	if err != nil {
+		return err
+	}
+	// A running event can record the deletion. A closed one cannot accept an update,
+	// and the directory includes completed workflows, so remove that execution.
+	if described.GetWorkflowExecutionInfo().GetStatus() == enums.WORKFLOW_EXECUTION_STATUS_RUNNING {
+		handle, err := g.client.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+			WorkflowID: tracker.EventID(id), UpdateID: "delete-event", UpdateName: "delete",
+			WaitForStage: client.WorkflowUpdateStageCompleted,
+		})
+		if err != nil {
+			return err
+		}
+		var event tracker.Event
+		return handle.Get(ctx, &event)
+	}
+	_, err = g.client.WorkflowService().DeleteWorkflowExecution(ctx, &workflowservice.DeleteWorkflowExecutionRequest{
+		Namespace:         g.namespace,
+		WorkflowExecution: &commonpb.WorkflowExecution{WorkflowId: tracker.EventID(id)},
+	})
+	var missing *serviceerror.NotFound
+	if errors.As(err, &missing) {
+		return nil
+	}
+	return err
 }
 
 func (g *temporalGateway) End(ctx context.Context, id string) (tracker.Event, error) {
@@ -164,4 +203,5 @@ var (
 	errInvalidCursor = errors.New("invalid pagination cursor")
 	errChanged       = errors.New("participants changed; reload the list or retry the export")
 	errExpired       = errors.New("event participant data is no longer available in Temporal retention")
+	errDeleted       = errors.New("this event was deleted")
 )
