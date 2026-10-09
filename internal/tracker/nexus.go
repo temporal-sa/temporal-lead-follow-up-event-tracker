@@ -240,19 +240,43 @@ func publicEvent(event Event) PublicEvent {
 }
 
 func EnsureFlightPass(ctx context.Context, c client.Client, taskQueue, eventID string, submission Submission) (string, error) {
-	code := FlightCode(eventID, submission.RequestID)
-	_, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
-		ID: FlightPassID(eventID, code), TaskQueue: taskQueue,
-		WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
-	}, FlightPassWorkflow, FlightPassInput{
-		EventID: eventID, Code: code, Name: submission.Name, Role: submission.Role, Email: submission.Email,
-		RequestID: submission.RequestID, ExpiresAt: time.Now().Add(FlightPassLifetime),
-	})
-	var already *serviceerror.WorkflowExecutionAlreadyStarted
-	if errors.As(err, &already) {
-		return code, nil
+	var last error
+	for salt := 0; salt < 32; salt++ {
+		code := FlightCode(eventID, submission.RequestID, salt)
+		_, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+			ID: FlightPassID(eventID, code), TaskQueue: taskQueue,
+			WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
+		}, FlightPassWorkflow, FlightPassInput{
+			EventID: eventID, Code: code, Name: submission.Name, Role: submission.Role, Email: submission.Email,
+			RequestID: submission.RequestID, ExpiresAt: time.Now().Add(FlightPassLifetime),
+		})
+		if err == nil {
+			return code, nil
+		}
+		var already *serviceerror.WorkflowExecutionAlreadyStarted
+		if !errors.As(err, &already) {
+			return "", err
+		}
+		owner, qerr := flightPassOwner(ctx, c, eventID, code)
+		if qerr == nil && owner == submission.RequestID {
+			return code, nil
+		}
+		last = err
 	}
-	return code, err
+	if last == nil {
+		last = errors.New("could not issue a flight code")
+	}
+	return "", last
+}
+
+func flightPassOwner(ctx context.Context, c client.Client, eventID, code string) (string, error) {
+	value, err := c.QueryWorkflow(ctx, FlightPassID(eventID, code), "", "request")
+	if err != nil {
+		return "", err
+	}
+	var requestID string
+	err = value.Get(&requestID)
+	return requestID, err
 }
 
 func ClaimFlightPass(ctx context.Context, c client.Client, eventID, code string) (FlightPassProfile, error) {

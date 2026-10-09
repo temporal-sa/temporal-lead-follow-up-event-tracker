@@ -10,12 +10,17 @@ import (
 )
 
 func TestFlightCodeIsStable(t *testing.T) {
-	first := FlightCode("kubecon", "request-1")
-	if first != FlightCode("kubecon", "request-1") || first == FlightCode("kubecon", "request-2") {
+	first := FlightCode("kubecon", "request-1", 0)
+	if first != FlightCode("kubecon", "request-1", 0) || first == FlightCode("kubecon", "request-2", 0) {
 		t.Fatalf("code = %s", first)
 	}
-	if len(first) != 8 {
+	if len(first) != 4 {
 		t.Fatalf("length = %d", len(first))
+	}
+	for _, c := range first {
+		if c < '0' || c > '9' {
+			t.Fatalf("code = %s", first)
+		}
 	}
 }
 

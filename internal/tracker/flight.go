@@ -2,7 +2,9 @@ package tracker
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -10,19 +12,14 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-const (
-	FlightPassLifetime = 30 * time.Minute
-	flightAlphabet     = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-)
+const FlightPassLifetime = 30 * time.Minute
 
-// FlightCode is the same code for the same event and submission request.
-func FlightCode(eventID, requestID string) string {
-	sum := sha256.Sum256([]byte(eventID + "\n" + requestID))
-	var code strings.Builder
-	for i := 0; i < 8; i++ {
-		code.WriteByte(flightAlphabet[int(sum[i])%len(flightAlphabet)])
-	}
-	return code.String()
+// FlightCode is a 4-digit code. The same event, request, and salt always
+// produce the same code, so a retried submission can find the pass it started.
+func FlightCode(eventID, requestID string, salt int) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%d", eventID, requestID, salt)))
+	n := binary.BigEndian.Uint16(sum[:2])
+	return fmt.Sprintf("%04d", int(n)%10000)
 }
 
 func FlightPassID(eventID, code string) string {
@@ -61,6 +58,11 @@ func FlightPassWorkflow(ctx workflow.Context, in FlightPassInput) error {
 	}); err != nil {
 		return err
 	}
+	if err := workflow.SetQueryHandler(ctx, "request", func() (string, error) {
+		return state.RequestID, nil
+	}); err != nil {
+		return err
+	}
 	if err := workflow.SetUpdateHandlerWithOptions(ctx, "claim", func(ctx workflow.Context) (FlightPassProfile, error) {
 		if state.Claimed {
 			return FlightPassProfile{}, temporal.NewApplicationError("this flight code was already used", "Claimed")
@@ -95,13 +97,13 @@ func (s flightPassState) profile() FlightPassProfile {
 }
 
 func NormalizeFlightCode(code string) (string, error) {
-	code = strings.ToUpper(strings.TrimSpace(code))
-	if len(code) != 8 {
-		return "", errors.New("enter the 8 character flight code")
+	code = strings.TrimSpace(code)
+	if len(code) != 4 {
+		return "", errors.New("enter the 4 digit flight code")
 	}
 	for _, c := range code {
-		if !strings.ContainsRune(flightAlphabet, c) {
-			return "", errors.New("enter the 8 character flight code")
+		if c < '0' || c > '9' {
+			return "", errors.New("enter the 4 digit flight code")
 		}
 	}
 	return code, nil
