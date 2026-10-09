@@ -338,6 +338,15 @@ func TestLocalAuthMustStayOnLoopback(t *testing.T) {
 	}
 }
 
+func TestPublicEventQRDoesNotRequireAnEmployee(t *testing.T) {
+	g := &fakeGateway{event: tracker.Event{ID: "demo"}}
+	h := testHandler(t, g)
+	w := request(t, h, "GET", "/events/demo/qr.png", "", "", "")
+	if w.Code != 200 || w.Header().Get("Content-Type") != "image/png" || !strings.HasPrefix(w.Body.String(), "\x89PNG\r\n\x1a\n") {
+		t.Fatalf("public QR status %d", w.Code)
+	}
+}
+
 func TestQRIsEmployeeOnlyAndPNGGenerated(t *testing.T) {
 	g := &fakeGateway{event: tracker.Event{ID: "demo"}}
 	h := testHandler(t, g)
