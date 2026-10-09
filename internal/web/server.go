@@ -235,7 +235,12 @@ func (s *server) submit(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
+	code, err := s.gateway.IssueFlightPass(r.Context(), id, input)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "saved", "flightCode": code})
 }
 
 func (s *server) listEvents(w http.ResponseWriter, r *http.Request) {

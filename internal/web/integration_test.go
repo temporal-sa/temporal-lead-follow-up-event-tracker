@@ -34,6 +34,7 @@ func TestIntegrationExportAfterWorkflowCompletion(t *testing.T) {
 		w := worker.New(c, id, worker.Options{})
 		w.RegisterWorkflow(tracker.EventWorkflow)
 		w.RegisterWorkflow(tracker.ParticipantShardWorkflow)
+		w.RegisterWorkflow(tracker.FlightPassWorkflow)
 		w.RegisterActivity(&tracker.Activities{Client: c})
 		return w
 	}
@@ -127,6 +128,7 @@ func TestIntegrationCustomFormDedupeBannerAndExportAfterWorkerRestart(t *testing
 		w := worker.New(c, queue, worker.Options{})
 		w.RegisterWorkflow(tracker.EventWorkflow)
 		w.RegisterWorkflow(tracker.ParticipantShardWorkflow)
+		w.RegisterWorkflow(tracker.FlightPassWorkflow)
 		w.RegisterActivity(&tracker.Activities{Client: c})
 		return w
 	}

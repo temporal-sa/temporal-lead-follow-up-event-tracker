@@ -22,6 +22,7 @@ type Gateway interface {
 	List(context.Context, string) ([]tracker.Event, string, error)
 	Event(context.Context, string) (tracker.Event, error)
 	Submit(context.Context, string, tracker.Submission) error
+	IssueFlightPass(context.Context, string, tracker.Submission) (string, error)
 	End(context.Context, string) (tracker.Event, error)
 	Banner(context.Context, string, string) (tracker.Event, error)
 	Page(context.Context, string, int, int) (tracker.ShardPage, error)
@@ -106,6 +107,10 @@ func (g *temporalGateway) Submit(ctx context.Context, id string, submission trac
 	}
 	var status string
 	return handle.Get(ctx, &status)
+}
+
+func (g *temporalGateway) IssueFlightPass(ctx context.Context, id string, submission tracker.Submission) (string, error) {
+	return tracker.EnsureFlightPass(ctx, g.client, g.taskQueue, id, submission)
 }
 
 func (g *temporalGateway) End(ctx context.Context, id string) (tracker.Event, error) {

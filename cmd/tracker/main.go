@@ -62,7 +62,9 @@ func run() error {
 		w := worker.New(c, taskQueue, options)
 		w.RegisterWorkflow(tracker.EventWorkflow)
 		w.RegisterWorkflow(tracker.ParticipantShardWorkflow)
+		w.RegisterWorkflow(tracker.FlightPassWorkflow)
 		w.RegisterActivity(&tracker.Activities{Client: c})
+		tracker.Service{Client: c, TaskQueue: taskQueue}.Register(w)
 		if err := w.Start(); err != nil {
 			return err
 		}

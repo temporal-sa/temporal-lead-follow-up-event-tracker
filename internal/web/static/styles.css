@@ -53,6 +53,7 @@ textarea{resize:vertical;min-height:96px}
 .feedback:focus{outline:none}
 .success-icon{display:flex;justify-content:center;align-items:center;border:1px solid #3c7657;color:var(--mint);background:#172d24;width:45px;height:45px;font-size:24px;margin-bottom:20px}
 .success-card p,.notice p{color:var(--gray);margin-top:12px}
+.flight-code{margin-top:18px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:2.4rem;letter-spacing:.14em;color:var(--ink,#141414)}
 .notice{background:var(--deep-blue);border:1px solid var(--line);padding:25px}
 .page-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;margin-bottom:32px}
 .page-heading .eyebrow{margin-bottom:12px}
