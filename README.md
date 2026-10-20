@@ -21,6 +21,8 @@ port 7234 (UI on 8234), ignores inherited Cloud credentials, and stores Temporal
 data under `.local/preview/`. Stop it with Ctrl+C. To change ports, set
 `PREVIEW_PORT`, `PREVIEW_TEMPORAL_PORT`, and `PREVIEW_TEMPORAL_UI_PORT`.
 
+To present the demo, follow [RUNBOOK.md](RUNBOOK.md): the walkthrough beat by beat, and where in the code each part happens.
+
 To run against an existing local Temporal server instead:
 
 In one terminal, start a persistent local Temporal server:
