@@ -62,6 +62,18 @@
     get(id).textContent = text || "";
     get(id).hidden = !text;
   };
+  // A form export holds everything needed to set up the same event again, except its dates.
+  const formExportKind = "temporal-event-form";
+  const download = (blob, filename) => {
+    const blobURL = URL.createObjectURL(blob);
+    const anchor = node("a");
+    anchor.href = blobURL;
+    anchor.download = filename;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(blobURL), 1000);
+  };
   const eventPath = (id) => `/api/admin/events/${encodeURIComponent(id)}`;
   const formPath = (id) => `/${encodeURIComponent(id)}`;
 
@@ -179,7 +191,36 @@
       if (!hidden) get("create-name").focus();
     });
     get("cancel-create").addEventListener("click", hideCreate);
-    const formBuilder = EventForms.builder(get("form-builder"));
+    let formBuilder = EventForms.builder(get("form-builder"));
+    get("import-form").addEventListener("click", () => get("import-form-file").click());
+    get("import-form-file").addEventListener("change", async () => {
+      const file = get("import-form-file").files[0];
+      get("import-form-file").value = "";
+      if (!file) return;
+      let imported;
+      try {
+        if (file.size > 512 * 1024) throw new Error("too large");
+        imported = JSON.parse(await file.text());
+        // Accept a full export or a bare form definition.
+        if (Array.isArray(imported?.sections)) imported = { form: imported };
+        if (!Array.isArray(imported?.form?.sections) || !imported.form.sections.length) throw new Error("no form");
+      } catch (_) {
+        feedback("create-feedback", "That file isn’t a form export. Choose a .json file from Export form on an event page.", "error", true);
+        return;
+      }
+      formBuilder = EventForms.builder(get("form-builder"), imported.form);
+      if (typeof imported.name === "string") get("create-name").value = imported.name;
+      if (typeof imported.description === "string") get("create-description").value = imported.description;
+      if (typeof imported.qrBanner === "string") {
+        get("create-qr-banner").value = imported.qrBanner;
+        get("create-qr-banner").dispatchEvent(new Event("input"));
+      }
+      get("create-template-badge").textContent = "Imported form";
+      const problem = formBuilder.validate();
+      if (problem) feedback("create-feedback", `Imported ${file.name}, but it needs a fix before you can create the event. ${problem}`, "error", true);
+      else feedback("create-feedback", `Imported ${file.name}. Choose the last day for responses, review the questions, and create the event.`, "success");
+      get("create-end-date").focus();
+    });
     get("create-qr-banner").addEventListener("input", () => {
       get("create-banner-preview").textContent = get("create-qr-banner").value.trim() || "Scan to keep the conversation going.";
     });
@@ -285,15 +326,7 @@
           const data = await response.json().catch(() => ({}));
           throw new Error(data.error || "Unable to export the responses. Please try again.");
         }
-        const blob = await response.blob();
-        const blobURL = URL.createObjectURL(blob);
-        const anchor = node("a");
-        anchor.href = blobURL;
-        anchor.download = `${event.name.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 80) || "event"}-leads.csv`;
-        document.body.append(anchor);
-        anchor.click();
-        anchor.remove();
-        setTimeout(() => URL.revokeObjectURL(blobURL), 1000);
+        download(await response.blob(), `${event.name.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 80) || "event"}-leads.csv`);
         feedback("detail-feedback", "Your CSV export is ready.", "success");
       } catch (error) { feedback("detail-feedback", failure(error), "error", true); }
       finally { button.disabled = false; }
@@ -341,7 +374,7 @@
     const renderHead = () => {
       responseFields = EventForms.fields(event.form);
       get("leads-head").replaceChildren();
-      responseFields.forEach((field) => { const header = node("th", "", field.label); header.scope = "col"; get("leads-head").append(header); });
+      responseFields.forEach((field) => { const header = node("th"); header.append(node("span", "cell-clamp", field.label)); header.title = field.label; header.scope = "col"; get("leads-head").append(header); });
       const dateHeader = node("th", "", "Last submitted · UTC"); dateHeader.scope = "col"; get("leads-head").append(dateHeader);
     };
     renderHead();
@@ -352,9 +385,11 @@
         ["Last submitted · UTC", dateText(lead.lastSubmittedAt), "date-cell"],
       ];
       cells.forEach(([label, value, className]) => {
-        const cell = node("td", className, value);
+        // Long answers are clamped to a few lines; the tooltip and the CSV export carry the full text.
+        const cell = node("td", className);
+        cell.append(node("span", "cell-clamp", value));
         cell.dataset.label = label;
-        if (label === "Last submitted · UTC") cell.title = `First submitted: ${dateText(lead.firstSubmittedAt)}`;
+        cell.title = label === "Last submitted · UTC" ? `First submitted: ${dateText(lead.firstSubmittedAt)}` : value;
         row.append(cell);
       });
       body.append(row);
@@ -411,6 +446,11 @@
       get("form-edit-toggle").setAttribute("aria-expanded", "true");
     });
     get("form-cancel").addEventListener("click", () => { closeEditor(); get("form-edit-toggle").focus(); });
+    get("form-export").addEventListener("click", () => {
+      const exported = { kind: formExportKind, version: 1, exportedAt: new Date().toISOString(), name: event.name, description: event.description || "", qrBanner: event.qrBanner || "", form: event.form || EventForms.defaultForm() };
+      download(new Blob([`${JSON.stringify(exported, null, 2)}\n`], { type: "application/json" }), `${event.id}-form.json`);
+      feedback("form-feedback", "Form exported. Use Import form when you create an event to set it up the same way.", "success");
+    });
     let savingForm = false;
     get("form-editor").addEventListener("submit", async (submission) => {
       submission.preventDefault();

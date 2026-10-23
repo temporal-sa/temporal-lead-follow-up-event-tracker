@@ -87,6 +87,12 @@ the final button's text (default "Request a follow-up", or something like
 "Submit survey") and the confirmation message attendees see after they submit;
 without one, they see a default thank-you.
 
+To run the same event again, click **Export form** on the event page. It
+downloads a JSON file with the questions, sections, button text, confirmation
+message, welcome message, and QR banner. In a new event, click **Import form**
+to load that file, then choose the end date. The server validates the imported
+form like any other.
+
 Question types include short text, paragraphs, email, phone, URL, number, multiple
 choice, dropdown, checkboxes, linear scale, rating, date, time, and single-choice
 or checkbox grids. A multiple-choice question can offer an "Other" option with a

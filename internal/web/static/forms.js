@@ -415,12 +415,14 @@ window.EventForms = (() => {
     const updateProgress = () => {
       const sections = route();
       const all = sections.flatMap((index) => schema.sections[index].fields);
-      const done = all.filter(answered).length;
+      // Sections already continued past are complete, including optional questions left blank.
+      const passed = new Set(path.slice(0, position).flatMap((index) => schema.sections[index].fields.map((field) => field.id)));
+      const done = all.filter((field) => passed.has(field.id) || answered(field)).length;
       const percent = all.length ? Math.round((done / all.length) * 100) : 0;
       fill.style.width = `${percent}%`;
       bar.setAttribute("aria-valuenow", String(percent));
-      bar.setAttribute("aria-valuetext", `${done} of ${all.length} questions answered`);
-      remaining.textContent = `${done} of ${all.length} questions answered`;
+      bar.setAttribute("aria-valuetext", `${done} of ${all.length} questions done`);
+      remaining.textContent = `${done} of ${all.length} questions done`;
       progress.textContent = schema.sections.length > 1 ? `Section ${position + 1} of ${sections.length}` : "* Required questions";
     };
     const nextLabel = () => { next.textContent = destination() === -1 ? `${schema.submitLabel?.trim() || defaultSubmitLabel} →` : "Continue →"; };
