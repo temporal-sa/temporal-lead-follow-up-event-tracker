@@ -91,13 +91,13 @@ On tmprl-demo.cloud you can't restart the components yourself; skip this beat or
 
 ## Show it in code
 
-All links point at commit [`eb05df6`](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/commit/eb05df66d52950c0adba8deb4e4e6558bf70604b). Open a file locally with `code -g <path>:<line>`.
+All links point at commit [`b7fe94d`](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/commit/b7fe94dd5e76861921976a94de52b00223bf2b09). Open a file locally with `code -g <path>:<line>`.
 
 ### Keep each event's state in its own Workflow
 
 **When to use it:** after beat 1, or when someone asks where the data is stored.
 
-**Where it is:** [`internal/web/gateway.go` lines 50–58](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/web/gateway.go#L50-L58) (`code -g internal/web/gateway.go:50`) and [`internal/tracker/workflows.go` lines 11–20](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/tracker/workflows.go#L11-L20) (`code -g internal/tracker/workflows.go:11`)
+**Where it is:** [`internal/web/gateway.go` lines 50–58](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/web/gateway.go#L50-L58) (`code -g internal/web/gateway.go:50`) and [`internal/tracker/workflows.go` lines 11–20](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/tracker/workflows.go#L11-L20) (`code -g internal/tracker/workflows.go:11`)
 
 ```go
 func (g *temporalGateway) Create(ctx context.Context, event tracker.Event) error {
@@ -123,8 +123,8 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 
 - This is the entity Workflow pattern: one Workflow per event, with the Workflow ID `event/<id>`. Its input is the whole event state, and the state lives in the Workflow's variables from then on.
 - The ID is the event's name as a slug, so "KubeCon 2026" is `event/kubecon-2026` and its form opens at `/kubecon-2026`. The Workflow ID is what keeps slugs unique: `REJECT_DUPLICATE` refuses an ID that a running or retained event already has, and the server tries `-2`, `-3`, and so on. By default the Go SDK's `ExecuteWorkflow` hands back the existing run instead of an error, which would silently drop the new event; `WorkflowExecutionErrorWhenAlreadyStarted` turns that into the error the retry needs.
-- Every page in the control panel reads the event with the `event` Query ([`gateway.go` lines 93–110](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/web/gateway.go#L93-L110)). A Query is read-only and isn't recorded in the history. It needs a running Worker to answer, which is why the control panel fails to load when the Worker is down.
-- The event list is a Visibility search, `WorkflowType = 'EventWorkflow' AND ExecutionStatus IN ('Running', 'Completed')` ([`gateway.go` lines 60–70](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/web/gateway.go#L60-L70)). Visibility is eventually consistent, so a new event can take a moment to appear in the list; its direct link works straight away.
+- Every page in the control panel reads the event with the `event` Query ([`gateway.go` lines 93–110](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/web/gateway.go#L93-L110)). A Query is read-only and isn't recorded in the history. It needs a running Worker to answer, which is why the control panel fails to load when the Worker is down.
+- The event list is a Visibility search, `WorkflowType = 'EventWorkflow' AND ExecutionStatus IN ('Running', 'Completed')` ([`gateway.go` lines 60–70](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/web/gateway.go#L60-L70)). Visibility is eventually consistent, so a new event can take a moment to appear in the list; its direct link works straight away.
 - The customer doesn't run a database, a schema, or a backup job for this. The trade-offs: the data is readable by anyone with access to the Namespace, and it lasts as long as the Namespace's retention period after the Workflows complete.
 
 **Docs:** [Entity Workflow pattern](https://docs.temporal.io/design-patterns/entity-workflow), [Go: Queries](https://docs.temporal.io/develop/go/workflows/message-passing#queries)
@@ -133,7 +133,7 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 
 **When to use it:** after beat 2 or 3, or when someone asks what happens when two hundred people scan at once.
 
-**Where it is:** [`internal/tracker/workflows.go` lines 37–61](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/tracker/workflows.go#L37-L61) (`code -g internal/tracker/workflows.go:37`), sent from [`internal/web/gateway.go` lines 112–122](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/web/gateway.go#L112-L122)
+**Where it is:** [`internal/tracker/workflows.go` lines 37–61](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/tracker/workflows.go#L37-L61) (`code -g internal/tracker/workflows.go:37`), sent from [`internal/web/gateway.go` lines 112–122](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/web/gateway.go#L112-L122)
 
 ```go
 if err := workflow.SetUpdateHandlerWithOptions(ctx, "submit", func(ctx workflow.Context, input Submission) (string, error) {
@@ -172,9 +172,9 @@ func (g *temporalGateway) Submit(ctx context.Context, id string, submission trac
 - A submission is an Update, so the phone waits until the Workflow has written the participant and returns "saved". A Signal couldn't tell the phone whether it worked.
 - The handler runs Activities, so several submissions could interleave while one waits. `workflow.NewMutex` makes them take turns. That is what keeps the count and the email deduplication correct under a burst.
 - The limit a burst reaches first is Temporal's: one Workflow can have at most 10 Updates in flight. Beyond that the server answers `ResourceExhausted`, and the attendee sees "Temporal is temporarily unavailable. Please retry." Retrying is safe because the form reuses its request ID. Two hundred people scanning at once will see some of those retries; the fix at that scale is to stop sending every submission through one Workflow.
-- The form creates one request ID per attempt and reuses it when you resubmit the same details after an error ([`internal/web/static/app.js` lines 108–110](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/web/static/app.js#L108-L110)). The server uses it in the Update ID, and Temporal deduplicates Updates with the same ID within one Workflow run.
+- The form creates one request ID per attempt and reuses it when you resubmit the same details after an error ([`internal/web/static/app.js` lines 108–110](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/web/static/app.js#L108-L110)). The server uses it in the Update ID, and Temporal deduplicates Updates with the same ID within one Workflow run.
 - That deduplication doesn't survive Continue-As-New, so the Workflow also keeps the last 1,024 request IDs in its state (`Receipts`) and carries them into each new run. Past that window, a replayed request counts as a new submission, and the email still keeps it to one participant.
-- The validator on [line 133](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/tracker/workflows.go#L133) rejects submissions after the event is deleted, and while the Workflow is about to Continue-As-New (the attendee sees "Event is refreshing. Please retry shortly.") or complete. A rejected Update isn't written to the history.
+- The validator on [line 133](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/tracker/workflows.go#L133) rejects submissions after the event is deleted, and while the Workflow is about to Continue-As-New (the attendee sees "Event is refreshing. Please retry shortly.") or complete. A rejected Update isn't written to the history.
 
 **Docs:** [Go: Update handlers and validators](https://docs.temporal.io/develop/go/workflows/message-passing#updates), [Exactly-once message processing](https://docs.temporal.io/handling-messages#exactly-once-message-processing)
 
@@ -182,7 +182,7 @@ func (g *temporalGateway) Submit(ctx context.Context, id string, submission trac
 
 **When to use it:** when someone asks how many attendees one event can hold, or whether one Workflow gets too big.
 
-**Where it is:** [`internal/tracker/workflows.go` lines 82–101](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/tracker/workflows.go#L82-L101) (`code -g internal/tracker/workflows.go:82`), with limits in [`internal/tracker/model.go` lines 16–24](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/tracker/model.go#L16-L24)
+**Where it is:** [`internal/tracker/workflows.go` lines 82–101](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/tracker/workflows.go#L82-L101) (`code -g internal/tracker/workflows.go:82`), with limits in [`internal/tracker/model.go` lines 16–24](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/tracker/model.go#L16-L24)
 
 ```go
 target := existing.ShardID
@@ -222,8 +222,8 @@ const (
 **What you need to understand:**
 
 - The event Workflow keeps counts and a list of shard IDs. The participant records live in `ParticipantShardWorkflow` children, `event/<id>/participants/0`, `/1`, and so on.
-- A shard holds up to 5,000 unique emails or about 1 MiB of state, whichever comes first. When a write reports the shard is full, the event starts the next shard and writes there ([lines 102–123](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/tracker/workflows.go#L102-L123)). The limit exists because Workflow state is carried through Continue-As-New as a payload, and payloads have a size limit.
-- `PARENT_CLOSE_POLICY_ABANDON` keeps the shards running when the event Workflow continues as new or completes. At the very end the event Signals each shard `finish` ([lines 235–239](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/tracker/workflows.go#L235-L239)).
+- A shard holds up to 5,000 unique emails or about 1 MiB of state, whichever comes first. When a write reports the shard is full, the event starts the next shard and writes there ([lines 102–123](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/tracker/workflows.go#L102-L123)). The limit exists because Workflow state is carried through Continue-As-New as a payload, and payloads have a size limit.
+- `PARENT_CLOSE_POLICY_ABANDON` keeps the shards running when the event Workflow continues as new or completes. At the very end the event Signals each shard `finish` ([lines 230–234](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/tracker/workflows.go#L230-L234)).
 - Where a participant lives depends on arrival order, not on their email, so `LocateLead` asks each shard in turn. It returns the shard, the request ID, and a digest of the stored answers, not the answers, so the event's history doesn't collect a second copy of returning attendees' details. Each submission's answers still appear in the event's history, as the Update's input and the write's input, but each run's history only holds the submissions since its last Continue-As-New. Closed runs keep theirs until the Namespace's retention period removes them.
 - A walkthrough event never gets past shard 0. The sharding is there so a large event doesn't need a different design.
 
@@ -233,7 +233,7 @@ const (
 
 **When to use it:** after the previous entry, when someone asks what happens if a write times out and the Activity retries.
 
-**Where it is:** [`internal/tracker/activities.go` lines 38–50](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/tracker/activities.go#L38-L50) (`code -g internal/tracker/activities.go:38`) and [`internal/tracker/model.go` lines 278–282](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/tracker/model.go#L278-L282)
+**Where it is:** [`internal/tracker/activities.go` lines 38–50](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/tracker/activities.go#L38-L50) (`code -g internal/tracker/activities.go:38`) and [`internal/tracker/model.go` lines 278–282](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/tracker/model.go#L278-L282)
 
 ```go
 func (a *Activities) WriteLead(ctx context.Context, command WriteCommand) (WriteResult, error) {
@@ -256,7 +256,7 @@ func (s *ShardState) Apply(c WriteCommand) (WriteResult, error) {
 
 **What you need to understand:**
 
-- The event writes to a shard through an Activity that sends the shard an Update. The Activity retries with no limit on attempts, starting 1 second after a failure and backing off to at most 10 seconds between attempts ([`workflows.go` lines 14–17](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/tracker/workflows.go#L14-L17)).
+- The event writes to a shard through an Activity that sends the shard an Update. The Activity retries with no limit on attempts, starting 1 second after a failure and backing off to at most 10 seconds between attempts ([`workflows.go` lines 14–17](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/tracker/workflows.go#L14-L17)).
 - Every write carries a sequence number that the event Workflow increments. The Update ID is built from it, so a retry within the same shard run is deduplicated by Temporal.
 - The shard also remembers the highest sequence it has applied. A late retry that arrives after a newer write, or after the shard has continued as new, is ignored. That's what stops an old attempt overwriting newer details.
 
@@ -264,14 +264,9 @@ func (s *ShardState) Apply(c WriteCommand) (WriteResult, error) {
 
 **When to use it:** after beat 6, or when someone asks what runs the schedule.
 
-**Where it is:** [`internal/tracker/workflows.go` lines 209–240](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/tracker/workflows.go#L209-L240) (`code -g internal/tracker/workflows.go:209`)
+**Where it is:** [`internal/tracker/workflows.go` lines 209–235](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/tracker/workflows.go#L209-L235) (`code -g internal/tracker/workflows.go:209`)
 
 ```go
-// Preserve the extra timer only when replaying histories from before this change.
-timerVersion := workflow.GetVersion(ctx, "event-completion-timer-only", workflow.DefaultVersion, 1)
-if timerVersion == workflow.DefaultVersion && workflow.Now(ctx).Before(state.Event.ClosesAt) {
-	workflow.Go(ctx, func(ctx workflow.Context) { _ = workflow.Sleep(ctx, state.Event.ClosesAt.Sub(workflow.Now(ctx))) })
-}
 // Completion starts Temporal retention; queries and exports remain available.
 remaining := state.Event.CompletesAt.Sub(workflow.Now(ctx))
 if remaining > 0 {
@@ -303,19 +298,19 @@ return state.Event.At(workflow.Now(ctx)), nil
 
 **What you need to understand:**
 
-- One `AwaitWithTimeout` does two jobs. Its timeout is the completion time, seven days after submissions close ([`model.go` line 94](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/tracker/model.go#L94)). Its condition wakes the Workflow early to Continue-As-New when Temporal suggests it: at about 4 MB or 4K events of history, or at 90% of the 2,000-Update limit. There is no counter of our own; the suggestion covers all three.
-- There is no timer for closing submissions. The `submit` handler compares the time with the close time when each submission arrives, and the API works out **open**, **ended**, or **archived** when it reads the event ([`model.go` lines 46–55](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/tracker/model.go#L46-L55)).
+- One `AwaitWithTimeout` does two jobs. Its timeout is the completion time, seven days after submissions close ([`model.go` line 94](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/tracker/model.go#L94)). Its condition wakes the Workflow early to Continue-As-New when Temporal suggests it: at about 4 MB or 4K events of history, or at 90% of the 2,000-Update limit. There is no counter of our own; the suggestion covers all three.
+- There is no timer for closing submissions. The `submit` handler compares the time with the close time when each submission arrives, and the API works out **open**, **ended**, or **archived** when it reads the event ([`model.go` lines 46–55](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/tracker/model.go#L46-L55)).
 - Before continuing as new or completing, the Workflow sets a flag that makes the Update validators reject new requests, then waits for `AllHandlersFinished`, so no submission is cut off halfway.
 - Completing doesn't delete anything. Queries and exports keep working until the Namespace's retention period removes the closed Workflows.
-- `GetVersion` keeps event histories recorded before a code change replaying correctly. The hosted Worker is unversioned, so this repo patches changes to Workflow code; the README explains why.
+- The hosted Worker is unversioned, so new Worker code has to replay the histories of events that are already running, and of completed ones whenever they're queried. The repo keeps Workflow changes compatible with those histories instead of branching on versions, and checks that by replaying a recorded history ([`history_replay_test.go`](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/tracker/history_replay_test.go)). Set `TEMPORAL_REPLAY_HISTORY` to replay one downloaded from the Temporal UI.
 
-**Docs:** [Continue-As-New](https://docs.temporal.io/workflow-execution/continue-as-new), [Go: Continue-As-New](https://docs.temporal.io/develop/go/workflows/continue-as-new), [Go: Patching with GetVersion](https://docs.temporal.io/develop/go/workflows/versioning#patching-with-getversion)
+**Docs:** [Continue-As-New](https://docs.temporal.io/workflow-execution/continue-as-new), [Go: Continue-As-New](https://docs.temporal.io/develop/go/workflows/continue-as-new), [Go: Replay a Workflow Execution](https://docs.temporal.io/develop/go/best-practices/testing-suite#replay)
 
 ### Export a consistent snapshot without a database
 
 **When to use it:** after beat 5, or when someone asks how the export avoids missing or duplicating a row during a burst.
 
-**Where it is:** [`internal/web/leads.go` lines 194–200](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/web/leads.go#L194-L200) (`code -g internal/web/leads.go:194`)
+**Where it is:** [`internal/web/leads.go` lines 194–200](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/web/leads.go#L194-L200) (`code -g internal/web/leads.go:194`)
 
 ```go
 confirmed, err := s.visibleEvent(ctx, id)
@@ -329,7 +324,7 @@ if confirmed.Busy || confirmed.Revision != event.Revision || confirmed.Count != 
 
 **What you need to understand:**
 
-- The export queries the event, pages through each shard with the `page` Query, then queries the event again. If a submission landed in between, the revision has changed, and the export tries again, up to three times ([lines 120–125](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/web/leads.go#L120-L125)).
+- The export queries the event, pages through each shard with the `page` Query, then queries the event again. If a submission landed in between, the revision has changed, and the export tries again, up to three times ([lines 120–125](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/web/leads.go#L120-L125)).
 - After three changed attempts it fails with "participants changed; reload the list or retry the export" rather than producing a partial file.
 - The **Participants** table uses the same check page by page.
 
@@ -337,9 +332,9 @@ if confirmed.Busy || confirmed.Revision != event.Revision || confirmed.Count != 
 
 When someone asks what they'd change for their own system, these are the parts to leave out:
 
-- **Game flight codes** belong to a separate game demo and are turned off on the attendee form for now. The Nexus `submit_participant` operation still starts a `FlightPassWorkflow` (`flight-pass/<event-id>/<code>`) that lives 30 minutes so the game can claim the attendee's name once ([`internal/tracker/flight.go` lines 51–93](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/tracker/flight.go#L51-L93)). The game reaches this app through the Nexus service in [`internal/tracker/nexus.go`](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/internal/tracker/nexus.go#L34-L44). Lead capture doesn't depend on either.
-- **Employee login is the tmprl-demo.cloud catalog's SSO.** Locally, `DEV_AUTH_EMAIL` stands in for it and only works on a loopback address ([`cmd/tracker/main.go` lines 79–85](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/cmd/tracker/main.go#L79-L85)). A customer would use their own identity provider.
-- **Optional Worker Versioning.** Setting `TEMPORAL_DEPLOYMENT_NAME` and `TEMPORAL_WORKER_BUILD_ID` makes the Worker pinned ([`cmd/tracker/main.go` lines 54–61](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/eb05df66d52950c0adba8deb4e4e6558bf70604b/cmd/tracker/main.go#L54-L61)). The hosted demo leaves it off.
+- **Game flight codes** belong to a separate game demo and are turned off on the attendee form for now. The Nexus `submit_participant` operation still starts a `FlightPassWorkflow` (`flight-pass/<event-id>/<code>`) that lives 30 minutes so the game can claim the attendee's name once ([`internal/tracker/flight.go` lines 51–93](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/tracker/flight.go#L51-L93)). The game reaches this app through the Nexus service in [`internal/tracker/nexus.go`](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/internal/tracker/nexus.go#L34-L44). Lead capture doesn't depend on either.
+- **Employee login is the tmprl-demo.cloud catalog's SSO.** Locally, `DEV_AUTH_EMAIL` stands in for it and only works on a loopback address ([`cmd/tracker/main.go` lines 79–85](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/cmd/tracker/main.go#L79-L85)). A customer would use their own identity provider.
+- **Optional Worker Versioning.** Setting `TEMPORAL_DEPLOYMENT_NAME` and `TEMPORAL_WORKER_BUILD_ID` makes the Worker pinned ([`cmd/tracker/main.go` lines 54–61](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/b7fe94dd5e76861921976a94de52b00223bf2b09/cmd/tracker/main.go#L54-L61)). The hosted demo leaves it off.
 
 ## Reset and tear down
 
