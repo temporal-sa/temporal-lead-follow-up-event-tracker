@@ -63,6 +63,7 @@
     get(id).hidden = !text;
   };
   const eventPath = (id) => `/api/admin/events/${encodeURIComponent(id)}`;
+  const formPath = (id) => `/${encodeURIComponent(id)}`;
 
   async function participant(id) {
     let event;
@@ -236,6 +237,7 @@
       get("detail-count").textContent = number.format(event.count || 0);
       get("detail-closes").textContent = dateText(event.endedAt || event.closesAt);
       get("detail-end").hidden = event.status !== "open";
+      get("form-edit-toggle").hidden = event.status === "archived";
       let lifecycle = "";
       if (event.completesAt) {
         lifecycle = "Responses remain available to view and export for as long as Temporal retains them.";
@@ -245,7 +247,7 @@
     };
     refreshSummary();
     get("detail-qr").href = `/admin/events/${encodeURIComponent(id)}/qr`;
-    get("detail-form-preview").href = `/events/${encodeURIComponent(id)}`;
+    get("detail-form-preview").href = formPath(id);
     get("detail-banner").value = event.qrBanner || "";
     get("banner-form").addEventListener("submit", async (submission) => {
       submission.preventDefault();
@@ -259,7 +261,7 @@
       finally { get("banner-save").disabled = false; }
     });
     get("detail-copy").addEventListener("click", async () => {
-      const link = `${location.origin}/events/${encodeURIComponent(id)}`;
+      const link = `${location.origin}${formPath(id)}`;
       try {
         await navigator.clipboard.writeText(link);
         feedback("detail-feedback", "Form link copied.", "success");
@@ -335,9 +337,14 @@
     let loading = false;
     let shown = false;
     const body = get("leads-body");
-    const responseFields = EventForms.fields(event.form);
-    responseFields.forEach((field) => { const header = node("th", "", field.label); header.scope = "col"; get("leads-head").append(header); });
-    const dateHeader = node("th", "", "Last submitted · UTC"); dateHeader.scope = "col"; get("leads-head").append(dateHeader);
+    let responseFields = [];
+    const renderHead = () => {
+      responseFields = EventForms.fields(event.form);
+      get("leads-head").replaceChildren();
+      responseFields.forEach((field) => { const header = node("th", "", field.label); header.scope = "col"; get("leads-head").append(header); });
+      const dateHeader = node("th", "", "Last submitted · UTC"); dateHeader.scope = "col"; get("leads-head").append(dateHeader);
+    };
+    renderHead();
     const renderLead = (lead) => {
       const row = node("tr");
       const cells = [
@@ -386,12 +393,51 @@
     };
     get("leads-more").addEventListener("click", () => load());
     get("refresh-leads").addEventListener("click", () => load(true));
+    let formBuilder = null;
+    const closeEditor = () => {
+      get("form-editor").hidden = true;
+      get("form-edit-toggle").setAttribute("aria-expanded", "false");
+      get("detail-form-builder").replaceChildren();
+      formBuilder = null;
+    };
+    get("form-edit-toggle").addEventListener("click", () => {
+      if (!get("form-editor").hidden) { closeEditor(); return; }
+      feedback("form-feedback", "");
+      formBuilder = EventForms.builder(get("detail-form-builder"), event.form, {
+        feedback: "form-feedback", eventName: () => event.name, eventDescription: () => event.description,
+        help: "Add, remove, or reorder questions. The required email question stays in the first section so repeat responses merge.",
+      });
+      get("form-editor").hidden = false;
+      get("form-edit-toggle").setAttribute("aria-expanded", "true");
+    });
+    get("form-cancel").addEventListener("click", () => { closeEditor(); get("form-edit-toggle").focus(); });
+    let savingForm = false;
+    get("form-editor").addEventListener("submit", async (submission) => {
+      submission.preventDefault();
+      if (savingForm || !formBuilder) return;
+      const problem = formBuilder.validate();
+      if (problem) { feedback("form-feedback", problem, "error", true); return; }
+      if (!submission.currentTarget.reportValidity()) return;
+      savingForm = true;
+      get("form-editor-fields").disabled = true;
+      feedback("form-feedback", "Saving questions…");
+      try {
+        event = await post(`${url}/form`, { form: formBuilder.value() });
+        refreshSummary();
+        closeEditor();
+        renderHead();
+        feedback("form-feedback", "");
+        await load(true);
+        feedback("leads-feedback", "Questions saved. New responses use the updated form.", "success");
+      } catch (error) { feedback("form-feedback", failure(error), "error", true); }
+      finally { savingForm = false; get("form-editor-fields").disabled = false; }
+    });
     await load();
   }
 
   async function start() {
     const path = location.pathname.replace(/\/+$/, "") || "/";
-    const participantRoute = path.match(/^\/events\/([^/]+)$/);
+    const participantRoute = path.match(/^\/events\/([^/]+)$/) || (path !== "/admin" && path.match(/^\/([A-Za-z0-9-]+)$/));
     if (participantRoute) {
       await participant(decodeURIComponent(participantRoute[1]));
       return;

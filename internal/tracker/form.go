@@ -47,6 +47,8 @@ type Field struct {
 	MinLabel    string   `json:"minLabel,omitempty"`
 	MaxLabel    string   `json:"maxLabel,omitempty"`
 	Branches    []Branch `json:"branches,omitempty"`
+	// AllowOther lets a multiple choice answer be free text outside Options.
+	AllowOther bool `json:"allowOther,omitempty"`
 }
 
 type Branch struct {
@@ -202,6 +204,9 @@ func (f Form) Normalize() (Form, error) {
 				}
 			} else if len(field.Options) > 0 {
 				return Form{}, errors.New("only choice questions can define choices")
+			}
+			if field.AllowOther && field.Type != "multiple_choice" {
+				return Form{}, errors.New("only multiple choice questions can offer an other option")
 			}
 			if grid {
 				field.Rows, err = normalizeChoices(field.Rows, 25, "grid rows")
@@ -512,7 +517,7 @@ func normalizeAnswer(field Field, input []string) ([]string, error) {
 		}
 		value = strconv.FormatFloat(number, 'f', -1, 64)
 	case "multiple_choice", "dropdown":
-		if !contains(field.Options, value) {
+		if !contains(field.Options, value) && !field.AllowOther {
 			return nil, errors.New("choose a valid answer")
 		}
 	case "linear_scale", "rating":
@@ -549,4 +554,27 @@ func normalizeSelections(options, values []string) ([]string, error) {
 		}
 	}
 	return canonical, nil
+}
+
+// WithoutStaleAnswers drops answers to questions removed by a form edit, so a
+// participant who opened the form before the edit can still submit. Legacy
+// events without a schema keep their exact validation.
+func (s Submission) WithoutStaleAnswers(event Event) Submission {
+	if event.Form == nil || len(s.Answers) == 0 {
+		return s
+	}
+	known := make(map[string]bool)
+	for _, section := range event.Form.Sections {
+		for _, field := range section.Fields {
+			known[field.ID] = true
+		}
+	}
+	answers := make([]Answer, 0, len(s.Answers))
+	for _, answer := range s.Answers {
+		if known[answer.FieldID] {
+			answers = append(answers, answer)
+		}
+	}
+	s.Answers = answers
+	return s
 }

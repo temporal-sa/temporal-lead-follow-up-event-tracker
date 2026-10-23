@@ -27,6 +27,7 @@ type Gateway interface {
 	End(context.Context, string) (tracker.Event, error)
 	Delete(context.Context, string) error
 	Banner(context.Context, string, string) (tracker.Event, error)
+	Form(context.Context, string, tracker.Form) (tracker.Event, error)
 	Page(context.Context, string, int, int) (tracker.ShardPage, error)
 	Health(context.Context) error
 }
@@ -51,6 +52,8 @@ func (g *temporalGateway) Create(ctx context.Context, event tracker.Event) error
 	_, err := g.client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID: tracker.EventID(event.ID), TaskQueue: g.taskQueue,
 		WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
+		// Without this, a taken slug returns the existing event's run instead of an error.
+		WorkflowExecutionErrorWhenAlreadyStarted: true,
 	}, tracker.EventType, tracker.EventState{Event: event})
 	return err
 }
@@ -174,6 +177,23 @@ func (g *temporalGateway) Banner(ctx context.Context, id, banner string) (tracke
 	handle, err := g.client.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
 		WorkflowID: tracker.EventID(id), UpdateID: "banner-" + hex.EncodeToString(token[:]), UpdateName: "banner",
 		Args: []any{banner}, WaitForStage: client.WorkflowUpdateStageCompleted,
+	})
+	if err != nil {
+		return event, err
+	}
+	err = handle.Get(ctx, &event)
+	return event, err
+}
+
+func (g *temporalGateway) Form(ctx context.Context, id string, form tracker.Form) (tracker.Event, error) {
+	var event tracker.Event
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return event, err
+	}
+	handle, err := g.client.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+		WorkflowID: tracker.EventID(id), UpdateID: "form-" + hex.EncodeToString(token[:]), UpdateName: "form",
+		Args: []any{form}, WaitForStage: client.WorkflowUpdateStageCompleted,
 	})
 	if err != nil {
 		return event, err

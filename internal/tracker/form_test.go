@@ -242,3 +242,48 @@ func TestCustomAnswersPersistThroughShardJSONAndReplacement(t *testing.T) {
 		t.Fatal("custom update was duplicated rather than replaced")
 	}
 }
+
+func TestMultipleChoiceOtherAcceptsFreeText(t *testing.T) {
+	field := normalizeTestField(t, Field{ID: "topic", Label: "Topic", Type: "multiple_choice", Options: []string{"A", "B"}, AllowOther: true})
+	if got, err := normalizeAnswer(field, []string{"  Something else  "}); err != nil || !reflect.DeepEqual(got, []string{"Something else"}) {
+		t.Fatalf("other answer: %q %v", got, err)
+	}
+	if got, err := normalizeAnswer(field, []string{"A"}); err != nil || !reflect.DeepEqual(got, []string{"A"}) {
+		t.Fatalf("listed answer: %q %v", got, err)
+	}
+	if _, err := normalizeAnswer(field, []string{strings.Repeat("x", 501)}); err == nil {
+		t.Fatal("accepted oversized other answer")
+	}
+	field.AllowOther = false
+	if _, err := normalizeAnswer(field, []string{"Something else"}); err == nil {
+		t.Fatal("accepted other answer without allowOther")
+	}
+	for _, kind := range []string{"dropdown", "checkboxes"} {
+		form := Form{Sections: []Section{{ID: "first", Fields: []Field{{ID: "email", Label: "Email", Type: "email", Required: true}, {ID: "q", Label: "Q", Type: kind, Options: []string{"A"}, AllowOther: true}}}}}
+		if _, err := form.Normalize(); err == nil {
+			t.Errorf("%s accepted allowOther", kind)
+		}
+	}
+}
+
+func TestSlug(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		attempt int
+		want    string
+	}{
+		{"KubeCon 2026", 0, "kubecon-2026"},
+		{"KubeCon 2026", 1, "kubecon-2026-2"},
+		{"  Replay: Durable   Execution!! ", 0, "replay-durable-execution"},
+		{"Café Meetup", 0, "caf-meetup"},
+		{"東京", 0, ""},
+		{"Admin", 0, ""},
+		{"Admin", 1, "admin-2"},
+		{strings.Repeat("abcd ", 20), 0, strings.TrimRight(strings.Repeat("abcd-", 8), "-")},
+		{strings.Repeat("a", 60), 11, strings.Repeat("a", MaxSlugLength-3) + "-12"},
+	} {
+		if got := Slug(tc.name, tc.attempt); got != tc.want || len(got) > MaxSlugLength {
+			t.Errorf("Slug(%q, %d) = %q, want %q", tc.name, tc.attempt, got, tc.want)
+		}
+	}
+}

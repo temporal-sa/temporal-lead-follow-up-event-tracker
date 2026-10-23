@@ -142,7 +142,7 @@ func (s Service) submitParticipant(ctx context.Context, input SubmitParticipantI
 	if err != nil {
 		return SubmitParticipantResult{}, nexusError(err)
 	}
-	submission, err := input.Submission.NormalizeForEvent(event)
+	submission, err := input.Submission.WithoutStaleAnswers(event).NormalizeForEvent(event)
 	if err != nil {
 		return SubmitParticipantResult{}, nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "%s", err.Error())
 	}

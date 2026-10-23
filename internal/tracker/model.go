@@ -203,6 +203,46 @@ type ShardPage struct {
 	Total int    `json:"total"`
 }
 
+// MaxSlugLength keeps "/" + slug within the 40 bytes the QR code reserves for an event path.
+const MaxSlugLength = 39
+
+// reservedSlugs are top-level paths the web server already serves.
+var reservedSlugs = map[string]bool{"admin": true, "api": true, "events": true, "static": true, "healthz": true, "readyz": true}
+
+// Slug turns an event name into a URL path segment: "KubeCon 2026" becomes
+// "kubecon-2026". Attempt 0 returns the base slug; later attempts append
+// "-2", "-3", and so on. It returns "" when the name has no ASCII letters or
+// digits, or when the base slug is reserved and attempt is 0.
+func Slug(name string, attempt int) string {
+	var b strings.Builder
+	dash := false
+	for _, c := range strings.ToLower(name) {
+		if c >= 'a' && c <= 'z' || c >= '0' && c <= '9' {
+			if dash && b.Len() > 0 {
+				b.WriteByte('-')
+			}
+			b.WriteRune(c)
+			dash = false
+		} else {
+			dash = true
+		}
+	}
+	base := b.String()
+	if base == "" {
+		return ""
+	}
+	suffix := ""
+	if attempt > 0 {
+		suffix = "-" + strconv.Itoa(attempt+1)
+	} else if reservedSlugs[base] {
+		return ""
+	}
+	if len(base)+len(suffix) > MaxSlugLength {
+		base = strings.TrimRight(base[:MaxSlugLength-len(suffix)], "-")
+	}
+	return base + suffix
+}
+
 func EventID(id string) string           { return "event/" + id }
 func ShardID(event string, n int) string { return fmt.Sprintf("event/%s/participants/%d", event, n) }
 

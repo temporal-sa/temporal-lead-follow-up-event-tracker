@@ -66,8 +66,12 @@ window.EventForms = (() => {
     return select;
   };
 
-  function builder(container, initial = defaultForm()) {
-    const schema = clone(initial);
+  // options: feedback (element ID for problems), eventName/eventDescription (preview text), help (intro copy).
+  function builder(container, initial = defaultForm(), options = {}) {
+    const schema = clone(initial || defaultForm());
+    const feedbackId = options.feedback || "create-feedback";
+    const eventName = options.eventName || (() => document.getElementById("create-name").value);
+    const eventDescription = options.eventDescription || (() => document.getElementById("create-description").value);
     let active = schema.sections[0].fields[0]?.id;
     const cleanupRoutes = () => {
       schema.sections.forEach((section, index) => {
@@ -86,13 +90,13 @@ window.EventForms = (() => {
     const targets = (index) => [["", index === schema.sections.length - 1 ? "Submit form (default)" : "Continue to the next section"], ...schema.sections.slice(index + 1).map((section, offset) => [section.id, `Section ${index + offset + 2}: ${section.title || "Untitled"}`]), ["submit", "Submit form"]];
     const preview = () => {
       const problem = validate();
-      if (problem) { document.getElementById("create-feedback").textContent = problem; document.getElementById("create-feedback").hidden = false; return; }
+      if (problem) { document.getElementById(feedbackId).textContent = problem; document.getElementById(feedbackId).hidden = false; return; }
       const dialog = node("dialog", "form-preview-dialog");
       const top = node("div", "preview-toolbar");
       top.append(node("span", "eyebrow", "Attendee preview"), button("Back to editor ×", () => dialog.close()));
-      dialog.append(top, node("h1", "preview-event-name", document.getElementById("create-name").value || "Your event"));
-      const eventDescription = document.getElementById("create-description").value;
-      if (eventDescription) dialog.append(node("p", "intro", eventDescription));
+      dialog.append(top, node("h1", "preview-event-name", eventName() || "Your event"));
+      const description = eventDescription();
+      if (description) dialog.append(node("p", "intro", description));
       const form = node("form", "card form-card");
       const fieldset = node("fieldset");
       const message = node("p", "feedback"); message.hidden = true; message.setAttribute("role", "status");
@@ -133,7 +137,7 @@ window.EventForms = (() => {
       main.append(editorControl("Question", label));
       const typeInput = selectControl(Object.entries(types), field.type, (value) => {
         field.type = value;
-        delete field.options; delete field.rows; delete field.min; delete field.max; delete field.minimum; delete field.maximum; delete field.minLabel; delete field.maxLabel; delete field.branches;
+        delete field.options; delete field.rows; delete field.min; delete field.max; delete field.minimum; delete field.maximum; delete field.minLabel; delete field.maxLabel; delete field.branches; delete field.allowOther;
         if (choiceTypes.includes(value)) field.options = ["Option 1", "Option 2"];
         if (gridTypes.includes(value)) field.rows = ["Row 1", "Row 2"];
         if (["linear_scale", "rating"].includes(value)) { field.min = 1; field.max = 5; }
@@ -146,6 +150,13 @@ window.EventForms = (() => {
         const choices = textControl((field.options || []).join("\n"), (value) => { field.options = value.split("\n").map((item) => item.trim()).filter(Boolean); }, { multiline: true, rows: 3, maxLength: 10000, required: true });
         choices.addEventListener("change", () => { cleanupRoutes(); render(); });
         editor.append(editorControl("Choices", choices, "One choice per line. Up to 50 choices."));
+      }
+      if (field.type === "multiple_choice") {
+        const toggle = node("label", "required-toggle other-toggle");
+        const checkbox = node("input"); checkbox.type = "checkbox"; checkbox.checked = Boolean(field.allowOther);
+        checkbox.addEventListener("change", () => { if (checkbox.checked) field.allowOther = true; else delete field.allowOther; });
+        toggle.append(checkbox, node("span", "", "Add an “Other” option people can fill in"));
+        editor.append(toggle);
       }
       if (gridTypes.includes(field.type)) editor.append(editorControl("Rows", textControl((field.rows || []).join("\n"), (value) => { field.rows = value.split("\n").map((item) => item.trim()).filter(Boolean); }, { multiline: true, required: true, maxLength: 5000 }), "One row per line. Up to 25 rows."));
       if (["linear_scale", "rating", "number"].includes(field.type)) {
@@ -221,7 +232,7 @@ window.EventForms = (() => {
       const headingActions = node("div", "builder-heading-actions");
       headingActions.append(node("span", "builder-count", `${fields(schema).length} questions · ${schema.sections.length} ${schema.sections.length === 1 ? "section" : "sections"}`), button("Preview form ↗", preview, "button secondary compact"));
       heading.append(node("h2", "", "Questions & sections"), headingActions);
-      container.append(heading, node("p", "field-help builder-help", "Start with the contact template. Add questions, choose what’s required, and send people to the right section."));
+      container.append(heading, node("p", "field-help builder-help", options.help || "Start with the contact template. Add questions, choose what’s required, and send people to the right section."));
       schema.sections.forEach((section, sectionIndex) => {
         const card = node("section", "section-editor");
         const header = node("div", "section-editor-header");
@@ -329,11 +340,30 @@ window.EventForms = (() => {
           if (field.required && item.input.type === "radio") item.input.required = true;
           list.append(item.option); return item.input;
         });
+        let other = null;
+        if (field.type === "multiple_choice" && field.allowOther) {
+          const priorOther = prior.length && !options.includes(prior[0]) ? prior[0] : "";
+          const item = choice("", "radio", prefix, Boolean(priorOther), "Other:");
+          if (field.required) item.input.required = true;
+          const text = wire(node("input", "other-input")); text.type = "text"; text.maxLength = 500; text.value = priorOther;
+          text.setAttribute("aria-label", `${field.label}: other answer`);
+          text.addEventListener("input", () => { if (text.value.trim()) item.input.checked = true; item.input.setCustomValidity(""); });
+          item.input.addEventListener("change", () => { if (item.input.checked) text.focus(); });
+          item.option.classList.add("other-option"); item.option.append(text);
+          list.append(item.option); inputs.push(item.input);
+          other = { input: item.input, text };
+        }
         inputs.forEach((input) => input.addEventListener("change", () => inputs.forEach((item) => item.setCustomValidity(""))));
         wrap.append(list);
         if (scale && (field.minLabel || field.maxLabel)) { const endpoints = node("div", "scale-labels"); endpoints.append(node("span", "", field.minLabel || ""), node("span", "", field.maxLabel || "")); wrap.append(endpoints); }
-        read = () => inputs.filter((item) => item.checked).map((item) => item.value);
-        validate = () => inputs[0]?.setCustomValidity(field.required && !inputs.some((input) => input.checked) ? "Choose at least one answer." : "");
+        read = () => {
+          if (other?.input.checked) return other.text.value.trim() ? [other.text.value.trim()] : [];
+          return inputs.filter((item) => item.checked).map((item) => item.value);
+        };
+        validate = () => {
+          inputs[0]?.setCustomValidity(field.required && !inputs.some((input) => input.checked) ? "Choose at least one answer." : "");
+          if (other) other.input.setCustomValidity(other.input.checked && !other.text.value.trim() ? "Describe your other answer." : "");
+        };
       } else {
         let input;
         if (field.type === "dropdown") {
