@@ -223,7 +223,8 @@ Before applying the manifest:
 The app does not create OAuth clients or issue its own employee sessions. Shared
 SSO requires the deployed hostname to be under `.tmprl-demo.cloud`. Completed
 workflow queries require a compatible worker, even during retention. Keep changes
-replay-compatible with Temporal patches and recorded-history replay checks.
+replay-compatible with existing histories, and check them with the recorded-history
+replay tests.
 The optional `TEMPORAL_REPLAY_HISTORY` test can replay a downloaded history file.
 Previously pinned workflows still require their original worker deployment;
 changing the task queue does not migrate those executions.

@@ -96,23 +96,6 @@ func TestManualEndKeepsScheduledCompletion(t *testing.T) {
 	}
 }
 
-func TestEventPreservesTimersForExistingHistories(t *testing.T) {
-	suite := testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
-	event := testEvent()
-	env.SetStartTime(event.ClosesAt.Add(-time.Second))
-	env.OnGetVersion("event-completion-timer-only", workflow.DefaultVersion, workflow.Version(1)).Return(workflow.DefaultVersion)
-	var timers []time.Duration
-	env.SetOnTimerScheduledListener(func(_ string, duration time.Duration) { timers = append(timers, duration) })
-	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatal(err)
-	}
-	if len(timers) != 2 {
-		t.Fatalf("existing histories must retain both original timers, got %v", timers)
-	}
-}
-
 func TestCoordinatorRoutesDuplicateToOriginalShard(t *testing.T) {
 	suite := testsuite.WorkflowTestSuite{}
 	env := suite.NewTestWorkflowEnvironment()

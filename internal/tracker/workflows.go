@@ -206,11 +206,6 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 	}, workflow.UpdateHandlerOptions{Validator: validator}); err != nil {
 		return Event{}, err
 	}
-	// Preserve the extra timer only when replaying histories from before this change.
-	timerVersion := workflow.GetVersion(ctx, "event-completion-timer-only", workflow.DefaultVersion, 1)
-	if timerVersion == workflow.DefaultVersion && workflow.Now(ctx).Before(state.Event.ClosesAt) {
-		workflow.Go(ctx, func(ctx workflow.Context) { _ = workflow.Sleep(ctx, state.Event.ClosesAt.Sub(workflow.Now(ctx))) })
-	}
 	// Completion starts Temporal retention; queries and exports remain available.
 	remaining := state.Event.CompletesAt.Sub(workflow.Now(ctx))
 	if remaining > 0 {

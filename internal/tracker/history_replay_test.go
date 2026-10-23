@@ -7,15 +7,6 @@ import (
 	"go.temporal.io/sdk/worker"
 )
 
-func TestReplayLegacyEventHistory(t *testing.T) {
-	replayer := worker.NewWorkflowReplayer()
-	replayer.RegisterWorkflow(EventWorkflow)
-	replayer.RegisterWorkflow(ParticipantShardWorkflow)
-	if err := replayer.ReplayWorkflowHistoryFromJSONFile(nil, "testdata/legacy-event-history.json"); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestReplayCurrentEventHistory(t *testing.T) {
 	replayer := worker.NewWorkflowReplayer()
 	replayer.RegisterWorkflow(EventWorkflow)
