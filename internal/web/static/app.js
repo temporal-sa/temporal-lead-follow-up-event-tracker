@@ -101,10 +101,10 @@
       navigator.setSubmitting(true);
       feedback("participant-feedback", "Saving your details…");
       try {
-        const saved = await post(`/api/events/${encodeURIComponent(id)}/participants`, body);
+        await post(`/api/events/${encodeURIComponent(id)}/participants`, body);
         get("participant-form").hidden = true;
         get("participant-intro").hidden = true;
-        get("flight-code").textContent = saved.flightCode || "";
+        get("confirmation-message").textContent = event.form?.confirmation || EventForms.defaultConfirmation;
         get("participant-success").hidden = false;
         get("participant-success").focus();
         attempt = null;

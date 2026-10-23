@@ -223,3 +223,19 @@ func TestSubmissionDropsAnswersToRemovedQuestions(t *testing.T) {
 		t.Fatalf("stale answer: %d %s %#v", w.Code, w.Body.String(), g.submission)
 	}
 }
+
+func TestSubmissionReturnsConfirmationWithoutFlightCode(t *testing.T) {
+	form := tracker.DefaultForm()
+	form.Confirmation = "Thanks for stopping by."
+	g := &fakeGateway{event: tracker.Event{ID: "demo", Status: "open", Form: &form}}
+	h := testHandler(t, g)
+	w := request(t, h, "GET", "/api/events/demo", "", "", "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"confirmation":"Thanks for stopping by."`) {
+		t.Fatalf("public event: %d %s", w.Code, w.Body.String())
+	}
+	body := `{"requestId":"01234567-89ab-cdef-0123-456789abcdef","answers":[{"fieldId":"name","values":["Ada"]},{"fieldId":"role","values":["Engineer"]},{"fieldId":"email","values":["ada@example.com"]}]}`
+	w = request(t, h, "POST", "/api/events/demo/participants", body, "", "")
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"status":"saved"}` {
+		t.Fatalf("submit: %d %s", w.Code, w.Body.String())
+	}
+}

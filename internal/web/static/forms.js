@@ -29,6 +29,7 @@ window.EventForms = (() => {
     { id: "email", label: "Email", type: "email", required: true },
     { id: "reason", label: "What would you like to follow up about?", type: "paragraph", required: false },
   ] }] });
+  const defaultConfirmation = "Your details have been saved. The Temporal team will follow up after the event.";
   const fields = (schema) => (schema || defaultForm()).sections.flatMap((section) => section.fields);
   const editorControl = (label, control, help) => {
     const wrap = node("div", "field editor-control");
@@ -106,7 +107,7 @@ window.EventForms = (() => {
       form.addEventListener("submit", (event) => {
         event.preventDefault();
         if (navigator.advance() !== null) {
-          form.replaceChildren(node("h2", "", "You’re all set."), node("p", "field-help", "This is how the confirmation appears after someone submits your form."), button("Back to editor", () => dialog.close(), "button"));
+          form.replaceChildren(node("h2", "", "You’re all set."), node("p", "confirmation-message", schema.confirmation?.trim() || defaultConfirmation), node("p", "form-note", "This is how the confirmation appears after someone submits your form."), button("Back to editor", () => dialog.close(), "button"));
         }
       });
       dialog.addEventListener("close", () => dialog.remove()); dialog.showModal();
@@ -261,6 +262,9 @@ window.EventForms = (() => {
       }, "button secondary add-section");
       addSection.disabled = schema.sections.length >= 20;
       container.append(addSection);
+      const confirmation = node("section", "confirmation-editor");
+      confirmation.append(node("p", "eyebrow", "AFTER SUBMITTING"), editorControl("Confirmation message", textControl(schema.confirmation, (value) => { if (value.trim()) schema.confirmation = value; else delete schema.confirmation; }, { multiline: true, rows: 3, maxLength: 1000, placeholder: defaultConfirmation }), "Shown under “You’re all set.” once someone submits. Leave it empty to use the default."));
+      container.append(confirmation);
     }
     const validate = () => {
         const all = fields(schema);
@@ -282,9 +286,14 @@ window.EventForms = (() => {
     const questions = node("div", "participant-questions");
     const heading = node("div", "participant-section-heading");
     const progress = node("p", "form-progress");
+    const meter = node("div", "progress-meter");
+    const bar = node("div", "progress-track"); const fill = node("span", "progress-fill"); bar.append(fill);
+    bar.setAttribute("role", "progressbar"); bar.setAttribute("aria-label", "Form progress"); bar.setAttribute("aria-valuemin", "0"); bar.setAttribute("aria-valuemax", "100");
+    const remaining = node("p", "progress-text"); remaining.setAttribute("aria-hidden", "true");
+    meter.append(bar, remaining);
     const title = node("h2");
     const description = node("p", "field-help");
-    heading.append(progress, title, description);
+    heading.append(progress, meter, title, description);
     const actions = node("div", "participant-navigation");
     const back = button("← Back", () => { capture(); position--; render(); }, "button secondary");
     const next = node("button", "button", "Continue →"); next.type = "submit"; next.dataset.participantSubmit = "";
@@ -384,24 +393,43 @@ window.EventForms = (() => {
       controls.push({ field, read, validate }); questions.append(wrap);
     };
     const capture = () => controls.forEach(({ field, read }) => saved.set(field.id, read()));
-    const destination = () => {
-      const index = path[position]; const section = schema.sections[index];
+    const destination = (index = path[position]) => {
+      const section = schema.sections[index];
       const routed = section.fields.flatMap((field) => (field.branches || []).filter((branch) => (saved.get(field.id) || [])[0] === branch.value))[0]?.sectionId;
       const target = routed || section.nextSectionId;
       if (target === "submit") return -1;
       if (target) return schema.sections.findIndex((item) => item.id === target);
       return index + 1 < schema.sections.length ? index + 1 : -1;
     };
+    // Branching means the length depends on the answers, so project the rest of the
+    // route from the answers given so far; unanswered routing questions use the default.
+    const route = () => {
+      const sections = path.slice(0, position + 1);
+      for (let target = destination(); target !== -1 && !sections.includes(target); target = destination(target)) sections.push(target);
+      return sections;
+    };
+    const answered = (field) => (saved.get(field.id) || []).some((value) => value && value !== "[]");
+    const updateProgress = () => {
+      const sections = route();
+      const all = sections.flatMap((index) => schema.sections[index].fields);
+      const done = all.filter(answered).length;
+      const percent = all.length ? Math.round((done / all.length) * 100) : 0;
+      fill.style.width = `${percent}%`;
+      bar.setAttribute("aria-valuenow", String(percent));
+      bar.setAttribute("aria-valuetext", `${done} of ${all.length} questions answered`);
+      remaining.textContent = `${done} of ${all.length} questions answered`;
+      progress.textContent = schema.sections.length > 1 ? `Section ${position + 1} of ${sections.length}` : "* Required questions";
+    };
     const nextLabel = () => { next.textContent = destination() === -1 ? "Request a follow-up →" : "Continue →"; };
-    questions.addEventListener("change", () => { capture(); nextLabel(); });
+    questions.addEventListener("change", () => { capture(); nextLabel(); updateProgress(); });
+    questions.addEventListener("input", () => { capture(); updateProgress(); });
     function render() {
       const index = path[position]; const section = schema.sections[index];
-      progress.textContent = schema.sections.length > 1 ? `Section ${index + 1} of ${schema.sections.length}` : "* Required questions";
       title.textContent = section.title || ""; title.hidden = !section.title;
       description.textContent = section.description || ""; description.hidden = !section.description;
       controls = []; questions.replaceChildren(); section.fields.forEach(addField);
       back.hidden = position === 0; back.disabled = submitting;
-      nextLabel();
+      nextLabel(); updateProgress();
       next.disabled = submitting;
     }
     render();
@@ -439,5 +467,5 @@ window.EventForms = (() => {
     }).filter(Boolean).join("\n") || "—";
     return values.join(", ") || "—";
   };
-  return { builder, mountParticipant, defaultForm, fields, answerText };
+  return { builder, mountParticipant, defaultForm, defaultConfirmation, fields, answerText };
 })();

@@ -82,7 +82,9 @@ an optional follow-up reason. Customize the questions when creating an event:
 edit labels and help text, add or remove questions, reorder them, and mark them
 required or optional. A required email question stays in the first section so
 every response has a deduplication key. Edit the questions later with **Edit
-questions** on the event page, until the event completes.
+questions** on the event page, until the event completes. The form also holds
+the confirmation message attendees see after they submit; without one, they
+see a default thank-you.
 
 Question types include short text, paragraphs, email, phone, URL, number, multiple
 choice, dropdown, checkboxes, linear scale, rating, date, time, and single-choice

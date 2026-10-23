@@ -47,12 +47,10 @@ The QR code encodes the app's public URL, which locally is `http://localhost:808
 ### 2. An attendee submits the form
 
 1. Click **Display QR code ↗** to show the full-screen QR display, then either scan it with a phone (hosted) or click **Open attendee form ↗** on the event page (local).
-2. Fill in the form with a test email and tap **Request a follow-up →**. The button shows "Saving your details…", then **You're all set.** with a 4-digit code.
+2. Fill in the form with a test email and tap **Request a follow-up →**. The button shows "Saving your details…", then **You're all set.** with the event's confirmation message.
 3. Back on the event page, click **Refresh** next to **Participants**. The row appears and **Responses** reads 1.
 4. Say: "The form sent an Update to the event's Workflow. The Workflow found where this email belongs, wrote it to a participant Workflow, and only then told the phone it was saved."
 5. For proof, open `event/<id>` in the Temporal UI. The history shows a `submit` Update (`WorkflowExecutionUpdateAccepted`, `WorkflowExecutionUpdateCompleted`), the `LocateLead` and `WriteLead` Activities, and, for the first response, a child Workflow `event/<id>/participants/0` of type `ParticipantShardWorkflow`. That child holds the participant records.
-
-The 4-digit code is for a separate game demo; see [What's demo-only](#whats-demo-only).
 
 ### 3. The same person submits again
 
@@ -335,7 +333,7 @@ if confirmed.Busy || confirmed.Revision != event.Revision || confirmed.Count != 
 
 When someone asks what they'd change for their own system, these are the parts to leave out:
 
-- **The 4-digit code on the success screen** belongs to a separate game demo. Each submission also starts a `FlightPassWorkflow` (`flight-pass/<event-id>/<code>`) that lives 30 minutes so the game can claim the attendee's name once ([`internal/tracker/flight.go` lines 51–93](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/48b15701e0d6e8058d2e1f19b2ef64f9b0ea0848/internal/tracker/flight.go#L51-L93)). The game reaches this app through the Nexus service in [`internal/tracker/nexus.go`](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/48b15701e0d6e8058d2e1f19b2ef64f9b0ea0848/internal/tracker/nexus.go#L34-L44). Lead capture doesn't depend on either.
+- **Game flight codes** belong to a separate game demo and are turned off on the attendee form for now. The Nexus `submit_participant` operation still starts a `FlightPassWorkflow` (`flight-pass/<event-id>/<code>`) that lives 30 minutes so the game can claim the attendee's name once ([`internal/tracker/flight.go` lines 51–93](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/48b15701e0d6e8058d2e1f19b2ef64f9b0ea0848/internal/tracker/flight.go#L51-L93)). The game reaches this app through the Nexus service in [`internal/tracker/nexus.go`](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/48b15701e0d6e8058d2e1f19b2ef64f9b0ea0848/internal/tracker/nexus.go#L34-L44). Lead capture doesn't depend on either.
 - **Employee login is the tmprl-demo.cloud catalog's SSO.** Locally, `DEV_AUTH_EMAIL` stands in for it and only works on a loopback address ([`cmd/tracker/main.go` lines 79–85](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/48b15701e0d6e8058d2e1f19b2ef64f9b0ea0848/cmd/tracker/main.go#L79-L85)). A customer would use their own identity provider.
 - **Optional Worker Versioning.** Setting `TEMPORAL_DEPLOYMENT_NAME` and `TEMPORAL_WORKER_BUILD_ID` makes the Worker pinned ([`cmd/tracker/main.go` lines 54–61](https://github.com/temporal-sa/temporal-lead-follow-up-event-tracker/blob/48b15701e0d6e8058d2e1f19b2ef64f9b0ea0848/cmd/tracker/main.go#L54-L61)). The hosted demo leaves it off.
 
@@ -344,7 +342,7 @@ When someone asks what they'd change for their own system, these are the parts t
 - **Between runs:** on the event page, click **Delete event**, then **Delete event** in the dialog. The event disappears from **Your events**, and its form and QR code stop opening. A running event Workflow records the deletion and keeps running until its completion time, seven days after its last day, so on tmprl-demo.cloud give test events today's date as the last day.
 - **To start locally from nothing:** stop `make preview`, delete `.local/preview/`, and start it again. That removes the dev server's data, including every event.
 - **To stop locally:** press `Ctrl+C` in the `make preview` terminal. It stops the app and the dev server it started; the data stays in `.local/preview/`.
-- **What keeps running:** each event Workflow and its shards wait until seven days after the last day, and each 4-digit code's Workflow waits 30 minutes, then they complete on their own. While they wait, nothing runs and nothing needs stopping.
+- **What keeps running:** each event Workflow and its shards wait until seven days after the last day, then complete on their own. While they wait, nothing runs and nothing needs stopping.
 
 ## When something goes wrong
 

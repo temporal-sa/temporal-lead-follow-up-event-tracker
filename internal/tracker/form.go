@@ -22,6 +22,8 @@ const (
 
 type Form struct {
 	Sections []Section `json:"sections"`
+	// Confirmation is shown to the participant after a successful submission.
+	Confirmation string `json:"confirmation,omitempty"`
 }
 
 type Section struct {
@@ -120,6 +122,10 @@ func (f Form) Normalize() (Form, error) {
 		return Form{}, fmt.Errorf("form must contain 1–%d sections", MaxFormSections)
 	}
 	f.Sections = append([]Section(nil), f.Sections...)
+	f.Confirmation = strings.TrimSpace(f.Confirmation)
+	if utf8.RuneCountInString(f.Confirmation) > 1000 {
+		return Form{}, errors.New("confirmation message must be at most 1,000 characters")
+	}
 	sectionIndexes := make(map[string]int, len(f.Sections))
 	for i, section := range f.Sections {
 		section.ID = strings.TrimSpace(section.ID)

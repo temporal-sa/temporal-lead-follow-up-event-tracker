@@ -287,3 +287,16 @@ func TestSlug(t *testing.T) {
 		}
 	}
 }
+
+func TestConfirmationMessageIsTrimmedAndBounded(t *testing.T) {
+	form := DefaultForm()
+	form.Confirmation = "  Thanks!\nSee you at the booth.  "
+	normalized, err := form.Normalize()
+	if err != nil || normalized.Confirmation != "Thanks!\nSee you at the booth." {
+		t.Fatalf("confirmation=%q err=%v", normalized.Confirmation, err)
+	}
+	form.Confirmation = strings.Repeat("x", 1001)
+	if _, err := form.Normalize(); err == nil {
+		t.Fatal("accepted an oversized confirmation message")
+	}
+}

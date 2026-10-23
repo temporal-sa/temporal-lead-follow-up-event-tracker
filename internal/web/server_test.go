@@ -58,9 +58,6 @@ func (g *fakeGateway) Submit(_ context.Context, _ string, input tracker.Submissi
 	g.submission = &input
 	return g.submitError
 }
-func (g *fakeGateway) IssueFlightPass(_ context.Context, eventID string, submission tracker.Submission) (string, error) {
-	return tracker.FlightCode(eventID, submission.RequestID, 0), nil
-}
 func (g *fakeGateway) End(context.Context, string) (tracker.Event, error) {
 	g.event.Status = "ended"
 	return g.event, nil
