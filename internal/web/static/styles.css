@@ -40,6 +40,17 @@ input[type=radio]:focus-visible,input[type=checkbox]:focus-visible{outline:2px s
 .button.danger{color:var(--pink);background:var(--space-black);border-color:var(--control-edge)}
 .button.danger:hover{border-color:var(--pink);box-shadow:0 0 0 4px rgba(255,107,255,.18)}
 .button:disabled,.text-button:disabled{opacity:.65;cursor:wait}
+/* Press feedback, and a spinner while an action runs (both from the buildkit's button treatment). */
+.button:active:not(:disabled){transform:translateY(1px);box-shadow:none;filter:brightness(.9)}
+.button[aria-busy=true]{opacity:1;cursor:progress}
+.button[aria-busy=true]::before{content:"";width:13px;height:13px;flex:none;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:button-spin .7s linear infinite}
+@keyframes button-spin{to{transform:rotate(360deg)}}
+.button.danger-solid{background:var(--pink);color:var(--space-black);border-color:var(--pink)}
+.button.danger-solid:hover{box-shadow:0 0 0 4px rgba(255,107,255,.25)}
+.toast-stack{position:fixed;top:88px;right:24px;z-index:20;display:grid;gap:8px;justify-items:end;pointer-events:none}
+.toast{max-width:min(420px,calc(100vw - 32px));padding:12px 16px;font-size:15px;background:var(--space-black);border:1px solid var(--uv-light);box-shadow:0 12px 40px #0008;overflow-wrap:anywhere;animation:toast-in .2s ease-out}
+.toast.error{border-color:var(--red)}
+@keyframes toast-in{from{opacity:0;transform:translateY(-6px)}}
 fieldset{padding:0;margin:0;border:0;min-width:0}
 .field+.field{margin-top:22px}
 label{display:block;margin-bottom:8px;font-size:15px;font-weight:500}
@@ -111,8 +122,10 @@ textarea{resize:vertical;min-height:96px}
 .leads-table .reason-cell{white-space:pre-wrap}
 .cell-clamp{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden}
 .leads-table .date-cell{font-size:12px;color:var(--gray)}
-dialog{background:var(--deepest-blue);color:var(--off-white);border:1px solid #4b5273;padding:30px;max-width:500px;width:calc(100% - 32px)}
-dialog::backdrop{background:#000a}
+dialog{background:rgba(17,17,22,.97);color:var(--off-white);border:1px solid var(--uv-light);padding:30px;max-width:520px;width:calc(100% - 32px)}
+dialog::backdrop{background:rgba(10,10,14,.7)}
+.dialog-actions{display:flex;gap:12px;justify-content:flex-end;margin-top:26px;flex-wrap:wrap}
+.confirm-dialog .feedback{margin-top:16px}
 dialog p{margin-top:14px;color:var(--gray)}
 .visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .error-page{max-width:570px;margin:20px auto}
@@ -267,6 +280,9 @@ select:disabled{opacity:.65}
 }
 @media(max-width:640px){
   .create-heading-actions,.form-card-actions{justify-content:flex-start}
+  .toast-stack{top:12px;left:12px;right:12px;justify-items:stretch}
+  .dialog-actions{flex-direction:column-reverse}
+  .dialog-actions .button{width:100%}
   .detail-form-card .section-heading{flex-direction:column;gap:12px}
   /* Grids stack on phones: each row becomes a block of full-width choices, so nothing scrolls sideways. */
   .grid-scroll{overflow:visible;border:0}

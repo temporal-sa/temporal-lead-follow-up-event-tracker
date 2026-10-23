@@ -74,6 +74,53 @@
     anchor.remove();
     setTimeout(() => URL.revokeObjectURL(blobURL), 1000);
   };
+  // Buttons show that they're working: a spinner, a present-tense label, and no second click.
+  const busy = (button, label) => {
+    const original = button.innerHTML;
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    button.textContent = label;
+    return () => { button.innerHTML = original; button.disabled = false; button.removeAttribute("aria-busy"); };
+  };
+  // Successes are announced in a toast; errors stay inline next to the action.
+  let toastStack = null;
+  const toast = (message, error = false) => {
+    if (!toastStack) {
+      toastStack = node("div", "toast-stack");
+      toastStack.setAttribute("aria-live", "polite");
+      document.body.append(toastStack);
+    }
+    const item = node("div", `toast${error ? " error" : ""}`, message);
+    toastStack.append(item);
+    setTimeout(() => item.remove(), error ? 6000 : 3500);
+  };
+  // A toast that survives one navigation, for actions that leave the page.
+  const flash = (message) => sessionStorage.setItem("flash", message);
+  const showFlash = () => {
+    const message = sessionStorage.getItem("flash");
+    sessionStorage.removeItem("flash");
+    if (message) toast(message);
+  };
+  // A native <dialog> confirmation that stays open, busy, until the action finishes.
+  const confirmation = ({ dialog, open, cancel, confirm, busyLabel, errorId, run }) => {
+    open.addEventListener("click", () => { feedback(errorId, ""); dialog.showModal(); });
+    cancel.addEventListener("click", () => dialog.close());
+    dialog.addEventListener("cancel", (event) => { if (confirm.disabled) event.preventDefault(); });
+    confirm.addEventListener("click", async () => {
+      const restore = busy(confirm, busyLabel);
+      cancel.disabled = true;
+      feedback(errorId, "");
+      try {
+        await run();
+        dialog.close();
+      } catch (error) {
+        feedback(errorId, failure(error), "error");
+      } finally {
+        restore();
+        cancel.disabled = false;
+      }
+    });
+  };
   const eventPath = (id) => `/api/admin/events/${encodeURIComponent(id)}`;
   const formPath = (id) => `/${encodeURIComponent(id)}`;
 
@@ -133,6 +180,7 @@
   async function dashboard() {
     document.title = "Events · Temporal follow-up";
     render("admin-template");
+    showFlash();
     let cursor = "";
     let loading = false;
     let loaded = false;
@@ -245,17 +293,18 @@
         return;
       }
       creating = true;
+      const restore = busy(get("create-submit"), "Creating…");
       get("create-fields").disabled = true;
-      get("create-submit").textContent = "Creating…";
-      feedback("create-feedback", "Creating your event…");
+      feedback("create-feedback", "");
       try {
         const event = await post("/api/admin/events", body);
+        flash(`Created “${event.name}”. Share its QR code or form link to start collecting responses.`);
         location.assign(`/admin/events/${encodeURIComponent(event.id)}`);
       } catch (error) {
         feedback("create-feedback", failure(error), "error", true);
         creating = false;
+        restore();
         get("create-fields").disabled = false;
-        get("create-submit").textContent = "Create event";
       }
     });
     await load();
@@ -271,6 +320,7 @@
     }
     document.title = `${event.name} · Temporal responses`;
     render("detail-template");
+    showFlash();
     const refreshSummary = () => {
       get("detail-name").textContent = event.name;
       setDescription("detail-description", event.description);
@@ -292,20 +342,24 @@
     get("detail-banner").value = event.qrBanner || "";
     get("banner-form").addEventListener("submit", async (submission) => {
       submission.preventDefault();
-      get("banner-save").disabled = true;
-      feedback("banner-feedback", "Saving display message…");
+      if (get("banner-save").disabled) return;
+      const restore = busy(get("banner-save"), "Saving…");
+      feedback("banner-feedback", "");
       try {
         event = await post(`${url}/banner`, { banner: get("detail-banner").value.trim() });
         refreshSummary();
-        feedback("banner-feedback", "QR display message saved.", "success");
+        toast("QR display message saved.");
       } catch (error) { feedback("banner-feedback", failure(error), "error", true); }
-      finally { get("banner-save").disabled = false; }
+      finally { restore(); }
     });
     get("detail-copy").addEventListener("click", async () => {
       const link = `${location.origin}${formPath(id)}`;
       try {
         await navigator.clipboard.writeText(link);
-        feedback("detail-feedback", "Form link copied.", "success");
+        const button = get("detail-copy");
+        button.textContent = "Copied ✓";
+        setTimeout(() => { button.textContent = "Copy form link"; }, 2000);
+        toast(`Form link copied: ${link}`);
       } catch (_) {
         const element = get("detail-feedback");
         element.replaceChildren(node("span", "", "Copy this form link: "));
@@ -318,8 +372,9 @@
     });
     get("detail-export").addEventListener("click", async () => {
       const button = get("detail-export");
-      button.disabled = true;
-      feedback("detail-feedback", "Preparing your export…");
+      if (button.disabled) return;
+      const restore = busy(button, "Preparing CSV…");
+      feedback("detail-feedback", "");
       try {
         const response = await fetch(`${url}/export.csv`, { credentials: "same-origin" });
         if (!response.ok) {
@@ -327,44 +382,29 @@
           throw new Error(data.error || "Unable to export the responses. Please try again.");
         }
         download(await response.blob(), `${event.name.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 80) || "event"}-leads.csv`);
-        feedback("detail-feedback", "Your CSV export is ready.", "success");
+        toast("CSV downloaded.");
       } catch (error) { feedback("detail-feedback", failure(error), "error", true); }
-      finally { button.disabled = false; }
+      finally { restore(); }
     });
-    const dialog = get("end-dialog");
-    get("detail-end").addEventListener("click", () => dialog.showModal());
-    get("cancel-end").addEventListener("click", () => dialog.close());
-    const deleteDialog = get("delete-dialog");
-    get("detail-delete").addEventListener("click", () => deleteDialog.showModal());
-    get("cancel-delete").addEventListener("click", () => deleteDialog.close());
-    get("confirm-delete").addEventListener("click", async () => {
-      get("confirm-delete").disabled = true;
-      deleteDialog.close();
-      get("detail-delete").disabled = true;
-      feedback("detail-feedback", "Deleting event…");
-      try {
-        await post(`${url}/delete`, {});
-        location.assign("/admin");
-      } catch (error) {
-        feedback("detail-feedback", failure(error), "error", true);
-        get("detail-delete").disabled = false;
-        get("confirm-delete").disabled = false;
-      }
-    });
-    get("confirm-end").addEventListener("click", async () => {
-      get("confirm-end").disabled = true;
-      dialog.close();
-      get("detail-end").disabled = true;
-      feedback("detail-feedback", "Ending event…");
-      try {
+    confirmation({
+      dialog: get("end-dialog"), open: get("detail-end"), cancel: get("cancel-end"), confirm: get("confirm-end"),
+      busyLabel: "Ending…", errorId: "end-dialog-feedback",
+      run: async () => {
         event = await post(`${url}/end`, {});
         refreshSummary();
-        feedback("detail-feedback", "Event ended. New responses are now closed.", "success", true);
-      } catch (error) { feedback("detail-feedback", failure(error), "error", true); }
-      finally {
-        get("detail-end").disabled = false;
-        get("confirm-end").disabled = false;
-      }
+        toast("Event ended. New responses are closed.");
+      },
+    });
+    confirmation({
+      dialog: get("delete-dialog"), open: get("detail-delete"), cancel: get("cancel-delete"), confirm: get("confirm-delete"),
+      busyLabel: "Deleting…", errorId: "delete-dialog-feedback",
+      run: async () => {
+        await post(`${url}/delete`, {});
+        flash(`Deleted “${event.name}”.`);
+        location.assign("/admin");
+        // Stay busy while the browser navigates away.
+        await new Promise(() => {});
+      },
     });
     let cursor = "";
     let loading = false;
@@ -427,7 +467,12 @@
       }
     };
     get("leads-more").addEventListener("click", () => load());
-    get("refresh-leads").addEventListener("click", () => load(true));
+    get("refresh-leads").addEventListener("click", async () => {
+      const button = get("refresh-leads");
+      button.textContent = "Refreshing…";
+      await load(true);
+      button.textContent = "Refresh";
+    });
     let formBuilder = null;
     const closeEditor = () => {
       get("form-editor").hidden = true;
@@ -449,7 +494,7 @@
     get("form-export").addEventListener("click", () => {
       const exported = { kind: formExportKind, version: 1, exportedAt: new Date().toISOString(), name: event.name, description: event.description || "", qrBanner: event.qrBanner || "", form: event.form || EventForms.defaultForm() };
       download(new Blob([`${JSON.stringify(exported, null, 2)}\n`], { type: "application/json" }), `${event.id}-form.json`);
-      feedback("form-feedback", "Form exported. Use Import form when you create an event to set it up the same way.", "success");
+      toast("Form exported. Use Import form when you create an event to set it up the same way.");
     });
     let savingForm = false;
     get("form-editor").addEventListener("submit", async (submission) => {
@@ -459,18 +504,19 @@
       if (problem) { feedback("form-feedback", problem, "error", true); return; }
       if (!submission.currentTarget.reportValidity()) return;
       savingForm = true;
+      const restore = busy(get("form-save"), "Saving…");
       get("form-editor-fields").disabled = true;
-      feedback("form-feedback", "Saving questions…");
+      feedback("form-feedback", "");
       try {
         event = await post(`${url}/form`, { form: formBuilder.value() });
         refreshSummary();
         closeEditor();
         renderHead();
         feedback("form-feedback", "");
+        toast("Questions saved. New responses use the updated form.");
         await load(true);
-        feedback("leads-feedback", "Questions saved. New responses use the updated form.", "success");
       } catch (error) { feedback("form-feedback", failure(error), "error", true); }
-      finally { savingForm = false; get("form-editor-fields").disabled = false; }
+      finally { savingForm = false; restore(); get("form-editor-fields").disabled = false; }
     });
     await load();
   }

@@ -119,13 +119,15 @@
         </div>
         <div class="empty-state card" id="leads-empty" hidden><h2>No responses yet.</h2><p>Share the form link or display the QR code to get started.</p></div>
         <button class="button secondary load-more" id="leads-more" type="button" hidden>Load more participants</button>
-        <dialog id="end-dialog" aria-labelledby="end-dialog-title" aria-describedby="end-dialog-description">
-          <h2 id="end-dialog-title">End this event?</h2><p id="end-dialog-description">New responses will stop immediately. You can still view and export the responses already collected.</p>
-          <div class="actions"><button class="button danger" id="confirm-end" type="button">End event</button><button class="button secondary" id="cancel-end" type="button">Keep event open</button></div>
+        <dialog id="end-dialog" class="confirm-dialog" aria-labelledby="end-dialog-title" aria-describedby="end-dialog-description">
+          <h2 id="end-dialog-title">End this event?</h2><p id="end-dialog-description">New responses will stop immediately. You can still view and export the responses already collected. This can’t be undone.</p>
+          <p class="feedback" id="end-dialog-feedback" role="alert" hidden></p>
+          <div class="dialog-actions"><button class="button secondary" id="cancel-end" type="button" autofocus>Keep event open</button><button class="button danger-solid" id="confirm-end" type="button">End event</button></div>
         </dialog>
-        <dialog id="delete-dialog" aria-labelledby="delete-dialog-title" aria-describedby="delete-dialog-description">
-          <h2 id="delete-dialog-title">Delete this event?</h2><p id="delete-dialog-description">It will disappear from your events. The form and QR code will no longer open.</p>
-          <div class="actions"><button class="button danger" id="confirm-delete" type="button">Delete event</button><button class="button secondary" id="cancel-delete" type="button">Keep event</button></div>
+        <dialog id="delete-dialog" class="confirm-dialog" aria-labelledby="delete-dialog-title" aria-describedby="delete-dialog-description">
+          <h2 id="delete-dialog-title">Delete this event?</h2><p id="delete-dialog-description">It will disappear from your events, and its form and QR code will stop opening. There’s no undo.</p>
+          <p class="feedback" id="delete-dialog-feedback" role="alert" hidden></p>
+          <div class="dialog-actions"><button class="button secondary" id="cancel-delete" type="button" autofocus>Keep event</button><button class="button danger-solid" id="confirm-delete" type="button">Delete event</button></div>
         </dialog>
       </section>
     </template>
