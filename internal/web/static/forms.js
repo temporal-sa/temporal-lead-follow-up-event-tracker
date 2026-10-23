@@ -29,6 +29,7 @@ window.EventForms = (() => {
     { id: "email", label: "Email", type: "email", required: true },
     { id: "reason", label: "What would you like to follow up about?", type: "paragraph", required: false },
   ] }] });
+  const defaultSubmitLabel = "Request a follow-up";
   const defaultConfirmation = "Your details have been saved. The Temporal team will follow up after the event.";
   const fields = (schema) => (schema || defaultForm()).sections.flatMap((section) => section.fields);
   const editorControl = (label, control, help) => {
@@ -263,7 +264,7 @@ window.EventForms = (() => {
       addSection.disabled = schema.sections.length >= 20;
       container.append(addSection);
       const confirmation = node("section", "confirmation-editor");
-      confirmation.append(node("p", "eyebrow", "AFTER SUBMITTING"), editorControl("Confirmation message", textControl(schema.confirmation, (value) => { if (value.trim()) schema.confirmation = value; else delete schema.confirmation; }, { multiline: true, rows: 3, maxLength: 1000, placeholder: defaultConfirmation }), "Shown under “You’re all set.” once someone submits. Leave it empty to use the default."));
+      confirmation.append(node("p", "eyebrow", "SUBMITTING"), editorControl("Submit button text", textControl(schema.submitLabel, (value) => { if (value.trim()) schema.submitLabel = value; else delete schema.submitLabel; }, { maxLength: 40, placeholder: defaultSubmitLabel }), "The last button in the form, for example “Submit survey”. Leave it empty to use the default."), editorControl("Confirmation message", textControl(schema.confirmation, (value) => { if (value.trim()) schema.confirmation = value; else delete schema.confirmation; }, { multiline: true, rows: 3, maxLength: 1000, placeholder: defaultConfirmation }), "Shown under “You’re all set.” once someone submits. Leave it empty to use the default."));
       container.append(confirmation);
     }
     const validate = () => {
@@ -330,7 +331,9 @@ window.EventForms = (() => {
             const input = wire(node("input")); input.type = field.type === "checkbox_grid" ? "checkbox" : "radio"; input.name = `${prefix}-row-${index}`; input.value = option;
             input.setAttribute("aria-label", `${row}: ${option}`); input.checked = field.type === "checkbox_grid" ? previous.includes(option) : prior[index] === option;
             if (field.required && input.type === "radio") input.required = true;
-            const cell = node("td"); cell.append(input); tr.append(cell); cells.push(input);
+            // The choice text is hidden on wide screens, where the column header shows it, and visible when rows stack on phones.
+            const choiceLabel = node("label", "grid-choice"); choiceLabel.append(input, node("span", "grid-choice-text", option));
+            const cell = node("td"); cell.append(choiceLabel); tr.append(cell); cells.push(input);
           });
           rows.push(cells); body.append(tr);
           cells.forEach((input) => input.addEventListener("change", () => cells.forEach((item) => item.setCustomValidity(""))));
@@ -420,7 +423,7 @@ window.EventForms = (() => {
       remaining.textContent = `${done} of ${all.length} questions answered`;
       progress.textContent = schema.sections.length > 1 ? `Section ${position + 1} of ${sections.length}` : "* Required questions";
     };
-    const nextLabel = () => { next.textContent = destination() === -1 ? "Request a follow-up →" : "Continue →"; };
+    const nextLabel = () => { next.textContent = destination() === -1 ? `${schema.submitLabel?.trim() || defaultSubmitLabel} →` : "Continue →"; };
     questions.addEventListener("change", () => { capture(); nextLabel(); updateProgress(); });
     questions.addEventListener("input", () => { capture(); updateProgress(); });
     function render() {

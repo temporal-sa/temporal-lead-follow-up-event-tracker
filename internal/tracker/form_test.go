@@ -300,3 +300,16 @@ func TestConfirmationMessageIsTrimmedAndBounded(t *testing.T) {
 		t.Fatal("accepted an oversized confirmation message")
 	}
 }
+
+func TestSubmitLabelIsTrimmedAndBounded(t *testing.T) {
+	form := DefaultForm()
+	form.SubmitLabel = "  Submit survey  "
+	normalized, err := form.Normalize()
+	if err != nil || normalized.SubmitLabel != "Submit survey" {
+		t.Fatalf("submitLabel=%q err=%v", normalized.SubmitLabel, err)
+	}
+	form.SubmitLabel = strings.Repeat("x", 41)
+	if _, err := form.Normalize(); err == nil {
+		t.Fatal("accepted oversized submit button text")
+	}
+}
