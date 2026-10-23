@@ -14,7 +14,7 @@ The demo makes three problems visible:
 
 ## Before you start
 
-- **On tmprl-demo.cloud:** open https://event-leads.tmprl-demo.cloud/admin and sign in with your `temporal.io` account through the catalog. The attendee form and QR image are public; everything under `/admin` needs that login.
+- **On tmprl-demo.cloud:** open https://events.tmprl-demo.cloud/admin and sign in with your `temporal.io` account through the catalog. The attendee form and QR image are public; everything under `/admin` needs that login.
   - The hosted demo holds real event leads from real events. Create a test event for the walkthrough, use a test email, and delete the event afterwards (see [Reset and tear down](#reset-and-tear-down)). Anyone with access to the project's Temporal Cloud Namespace can read submissions in Workflow histories.
   - To show the Workflows, you need access to the project's Temporal Cloud Namespace. The catalog creates it; this repo doesn't name it.
 - **To run it locally:** install Go 1.26 or later and the [Temporal CLI](https://docs.temporal.io/cli), and clone the repo. No accounts or keys are needed.

@@ -64,4 +64,4 @@ fi
 )
 
 echo "Published $repository_url and the GitOps manifest."
-echo "Once reconciliation finishes, open https://event-leads.tmprl-demo.cloud/admin"
+echo "Once reconciliation finishes, open https://events.tmprl-demo.cloud/admin"
