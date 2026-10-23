@@ -168,3 +168,58 @@ func TestCustomCSVSchemaOrderGridRowsAndSafeCells(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateEventUsesNameSlugAndSkipsTakenIDs(t *testing.T) {
+	g := &fakeGateway{taken: map[string]bool{"kubecon-2026": true, "kubecon-2026-2": true}}
+	h := testHandler(t, g)
+	w := request(t, h, "POST", "/api/admin/events", `{"name":"KubeCon 2026","endDate":"2099-01-01"}`, validSession, "https://leads.tmprl-demo.cloud")
+	if w.Code != http.StatusCreated || g.created == nil || g.created.ID != "kubecon-2026-3" || w.Header().Get("Location") != "/api/admin/events/kubecon-2026-3" {
+		t.Fatalf("slug creation: %d %s %#v", w.Code, w.Body.String(), g.created)
+	}
+	g.created = nil
+	w = request(t, h, "POST", "/api/admin/events", `{"name":"東京","endDate":"2099-01-01"}`, validSession, "https://leads.tmprl-demo.cloud")
+	if w.Code != http.StatusCreated || g.created == nil || len(g.created.ID) != 32 {
+		t.Fatalf("name without a slug should fall back to a random ID: %d %#v", w.Code, g.created)
+	}
+}
+
+func TestEventPagesServeAtSlugAndRejectOtherPaths(t *testing.T) {
+	h := testHandler(t, &fakeGateway{event: tracker.Event{ID: "kubecon-2026", Status: "open"}})
+	for path, want := range map[string]int{"/kubecon-2026": 200, "/events/kubecon-2026": 200, "/favicon.ico": 404, "/admin": 302} {
+		if w := request(t, h, "GET", path, "", "", ""); w.Code != want {
+			t.Errorf("%s: got %d want %d", path, w.Code, want)
+		}
+	}
+}
+
+func TestFormEditReplacesQuestionsAndValidates(t *testing.T) {
+	g := &fakeGateway{event: tracker.Event{ID: "demo", Status: "open"}}
+	h := testHandler(t, g)
+	form := customAPIForm()
+	body, _ := json.Marshal(map[string]any{"form": form})
+	w := request(t, h, "POST", "/api/admin/events/demo/form", string(body), validSession, "https://leads.tmprl-demo.cloud")
+	if w.Code != http.StatusOK || len(g.forms) != 1 || g.event.Form == nil {
+		t.Fatalf("form edit: %d %s", w.Code, w.Body.String())
+	}
+	if w := request(t, h, "POST", "/api/admin/events/demo/form", string(body), validSession, ""); w.Code != http.StatusForbidden {
+		t.Fatalf("form edit without origin: %d", w.Code)
+	}
+	invalid, _ := json.Marshal(map[string]any{"form": tracker.Form{Sections: []tracker.Section{{ID: "a", Fields: []tracker.Field{{ID: "name", Label: "Name", Type: "short_text"}}}}}})
+	if w := request(t, h, "POST", "/api/admin/events/demo/form", string(invalid), validSession, "https://leads.tmprl-demo.cloud"); w.Code != http.StatusBadRequest || len(g.forms) != 1 {
+		t.Fatalf("form without email accepted: %d %s", w.Code, w.Body.String())
+	}
+	g.event.Status = "archived"
+	if w := request(t, h, "POST", "/api/admin/events/demo/form", string(body), validSession, "https://leads.tmprl-demo.cloud"); w.Code != http.StatusGone || len(g.forms) != 1 {
+		t.Fatalf("archived form edit: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSubmissionDropsAnswersToRemovedQuestions(t *testing.T) {
+	form := tracker.DefaultForm()
+	g := &fakeGateway{event: tracker.Event{ID: "demo", Status: "open", Form: &form}}
+	body := `{"requestId":"01234567-89ab-cdef-0123-456789abcdef","answers":[{"fieldId":"name","values":["Ada"]},{"fieldId":"role","values":["Engineer"]},{"fieldId":"email","values":["ada@example.com"]},{"fieldId":"removed","values":["stale"]}]}`
+	w := request(t, testHandler(t, g), "POST", "/api/events/demo/participants", body, "", "")
+	if w.Code != http.StatusOK || g.submission == nil || len(g.submission.Answers) != 3 {
+		t.Fatalf("stale answer: %d %s %#v", w.Code, w.Body.String(), g.submission)
+	}
+}

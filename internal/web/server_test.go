@@ -33,9 +33,14 @@ type fakeGateway struct {
 	bannerError error
 	deleted     []string
 	deleteError error
+	forms       []tracker.Form
+	taken       map[string]bool
 }
 
 func (g *fakeGateway) Create(_ context.Context, event tracker.Event) error {
+	if g.taken[event.ID] {
+		return serviceerror.NewWorkflowExecutionAlreadyStarted("taken", "", "")
+	}
 	g.created = &event
 	return nil
 }
@@ -75,6 +80,12 @@ func (g *fakeGateway) Banner(_ context.Context, _ string, banner string) (tracke
 		return tracker.Event{}, g.bannerError
 	}
 	g.event.QRBanner = banner
+	return g.event, nil
+}
+func (g *fakeGateway) Form(_ context.Context, _ string, form tracker.Form) (tracker.Event, error) {
+	g.forms = append(g.forms, form)
+	g.event.Form = &form
+	g.event.Revision++
 	return g.event, nil
 }
 func (g *fakeGateway) Page(_ context.Context, id string, offset, limit int) (tracker.ShardPage, error) {

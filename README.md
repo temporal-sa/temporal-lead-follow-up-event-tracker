@@ -64,6 +64,12 @@ deployment, run `serve` and `worker` as separate components from the same image.
 ## Event behavior
 
 Create an event with a name, optional description, and required end date in UTC.
+The event's link is its normalized name: "KubeCon 2026" opens at `/kubecon-2026`.
+If another running or retained event already uses that slug, the next free
+suffix is used (`/kubecon-2026-2`). Slugs are at most 39 characters so the QR
+code keeps its capacity; names without ASCII letters or digits, or that match
+an app path such as `admin`, get a suffix or a random ID. Events created before
+slugs keep their random IDs, and `/events/{id}` links keep working.
 An end date of October 7 closes submissions at October 8, 00:00:00 UTC. The event
 and participant workflows complete seven days later, October 15, 00:00:00 UTC.
 Ending manually closes submissions immediately without shortening that scheduled
@@ -75,16 +81,21 @@ New events start with a form template containing name, title / role, email, and
 an optional follow-up reason. Customize the questions when creating an event:
 edit labels and help text, add or remove questions, reorder them, and mark them
 required or optional. A required email question stays in the first section so
-every response has a deduplication key.
+every response has a deduplication key. Edit the questions later with **Edit
+questions** on the event page, until the event completes.
 
 Question types include short text, paragraphs, email, phone, URL, number, multiple
 choice, dropdown, checkboxes, linear scale, rating, date, time, and single-choice
-or checkbox grids. Organize questions into sections. Multiple-choice and dropdown
+or checkbox grids. A multiple-choice question can offer an "Other" option with a
+free-text answer, which is stored and exported as the text the participant typed. Organize questions into sections. Multiple-choice and dropdown
 answers can route to a later section or submit immediately; sections also have
 a default next step. Required questions in skipped sections do not block submission.
 The server validates the selected path and discards answers from skipped sections.
-Form definitions stay fixed after event creation so captured responses and export
-columns retain their meaning. Existing events keep their original form behavior.
+Editing a form applies to new responses immediately. Responses already collected
+keep their stored answers, but the participant table and CSV export follow the
+current form, so answers to a removed question no longer appear there. A form
+opened before an edit can still be submitted: answers to removed questions are
+dropped, and newly required questions must be answered.
 
 Set a QR-page banner during event creation or update it from the event control
 panel while the event workflow is active. The fullscreen display includes Temporal

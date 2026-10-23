@@ -516,3 +516,44 @@ func closedUpdate(t *testing.T, err error) bool {
 	}
 	return true
 }
+
+func TestFormUpdateReplacesQuestionsAndSurvivesContinueAsNew(t *testing.T) {
+	suite := testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+	event := testEvent()
+	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
+	edited := DefaultForm()
+	edited.Sections[0].Fields = append(edited.Sections[0].Fields, Field{ID: "topic", Label: " Topic ", Type: "multiple_choice", Options: []string{"Go"}, AllowOther: true})
+	checked := false
+	env.RegisterDelayedCallback(func() {
+		env.UpdateWorkflow("form", "invalid", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
+			if err == nil {
+				t.Error("accepted a form without an email question")
+			}
+		}}, Form{Sections: []Section{{ID: "a", Fields: []Field{{ID: "name", Label: "Name", Type: "short_text"}}}}})
+		env.UpdateWorkflow("form", "valid", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			result := value.(Event)
+			if result.Form == nil || len(result.Form.Sections[0].Fields) != 5 || result.Form.Sections[0].Fields[4].Label != "Topic" || result.Revision != 1 {
+				t.Errorf("form=%+v", result)
+			}
+			checked = true
+			env.SetContinueAsNewSuggested(true)
+		}}, edited)
+	}, time.Second)
+	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
+	var continuation *workflow.ContinueAsNewError
+	if !errors.As(env.GetWorkflowError(), &continuation) {
+		t.Fatal(env.GetWorkflowError())
+	}
+	var state EventState
+	if err := converter.GetDefaultDataConverter().FromPayloads(continuation.Input, &state); err != nil {
+		t.Fatal(err)
+	}
+	if !checked || state.Event.Form == nil || !state.Event.Form.Sections[0].Fields[4].AllowOther {
+		t.Fatalf("edited form lost: %+v", state.Event)
+	}
+}

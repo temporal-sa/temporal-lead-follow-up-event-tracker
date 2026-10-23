@@ -191,6 +191,10 @@ select:disabled{opacity:.65}
 .qr-banner-preview p{font-size:20px;letter-spacing:-.025em;margin-top:4px;overflow-wrap:anywhere;white-space:pre-wrap}
 .immutable-form-note{margin-top:24px}
 .detail-banner-card{margin-bottom:32px}
+.detail-form-card{margin-bottom:32px}
+.detail-form-card .section-heading{margin:0 0 12px;align-items:flex-start}
+.detail-form-card .eyebrow{margin-bottom:7px}
+.other-toggle{margin:4px 0 16px}
 .detail-banner-card .section-heading{margin:0 0 20px;align-items:flex-start}
 .detail-banner-card .eyebrow{margin-bottom:7px}
 .detail-banner-card .text-button{font-size:12px;white-space:nowrap}
@@ -214,6 +218,8 @@ select:disabled{opacity:.65}
 .choice-option:has(input:checked){border-color:var(--indigo-300);background:#242742}
 .choice-option:hover{border-color:#707898}
 .choice-option input{width:17px;height:17px;min-height:17px;margin:0;flex:none;accent-color:var(--indigo-300)}
+.other-option>span{flex:none}
+.choice-option .other-input{flex:1;min-width:0;width:auto;height:auto;min-height:32px;padding:4px 8px;font-size:14px}
 .scale-options{display:flex;gap:7px;flex-wrap:wrap}
 .scale-option{min-width:40px;flex:1;padding:12px 8px;justify-content:center;font-size:15px;position:relative}
 .scale-option input{position:absolute;opacity:0;width:100%;height:100%;inset:0;cursor:pointer}

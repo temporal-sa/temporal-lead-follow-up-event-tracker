@@ -163,6 +163,7 @@ func TestVerifierUnavailableBlocksEveryAdminRoute(t *testing.T) {
 		{"POST", "/api/admin/events/demo/end"},
 		{"POST", "/api/admin/events/demo/delete"},
 		{"POST", "/api/admin/events/demo/banner"},
+		{"POST", "/api/admin/events/demo/form"},
 		{"GET", "/api/admin/events/demo/participants"},
 		{"GET", "/api/admin/events/demo/export.csv"},
 		{"GET", "/admin"},
@@ -190,7 +191,7 @@ func TestPublicFormsAndMissingSessionsDoNotCallVerifier(t *testing.T) {
 		calls++
 		return nil, errors.New("catalog unavailable")
 	}))
-	for _, path := range []string{"/", "/events/demo", "/api/events/demo", "/healthz"} {
+	for _, path := range []string{"/", "/demo", "/events/demo", "/api/events/demo", "/healthz"} {
 		w := request(t, h, "GET", path, "", validSession, "")
 		if w.Code != 200 {
 			t.Errorf("%s: %d %s", path, w.Code, w.Body.String())

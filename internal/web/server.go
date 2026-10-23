@@ -107,6 +107,7 @@ func newHandler(config Config, gateway Gateway, authTransport http.RoundTripper)
 	mux.HandleFunc("POST /api/admin/events/{id}/end", s.admin(s.endEvent))
 	mux.HandleFunc("POST /api/admin/events/{id}/delete", s.admin(s.deleteEvent))
 	mux.HandleFunc("POST /api/admin/events/{id}/banner", s.admin(s.banner))
+	mux.HandleFunc("POST /api/admin/events/{id}/form", s.admin(s.form))
 	mux.HandleFunc("GET /api/admin/events/{id}/participants", s.admin(s.participants))
 	mux.HandleFunc("GET /api/admin/events/{id}/export.csv", s.admin(s.export))
 	mux.HandleFunc("GET /admin/events/{id}/qr", s.admin(s.qrPage))
@@ -115,6 +116,8 @@ func newHandler(config Config, gateway Gateway, authTransport http.RoundTripper)
 	mux.HandleFunc("GET /admin/events/{id}", s.admin(s.index))
 	mux.HandleFunc("GET /events/{id}/qr.png", s.qrImage)
 	mux.HandleFunc("GET /events/{id}", s.index)
+	// Event links are /{slug}; /events/{id} stays for QR codes printed before slugs.
+	mux.HandleFunc("GET /{id}", s.eventPage)
 	mux.HandleFunc("GET /{$}", s.index)
 	static, err := fs.Sub(assets, "static")
 	if err != nil {
@@ -168,6 +171,14 @@ func (s *server) index(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(data)
+}
+
+func (s *server) eventPage(w http.ResponseWriter, r *http.Request) {
+	if _, err := eventID(r); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	s.index(w, r)
 }
 
 func eventID(r *http.Request) (string, error) {
@@ -234,7 +245,7 @@ func (s *server) submit(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	input, err = input.NormalizeForEvent(event)
+	input, err = input.WithoutStaleAnswers(event).NormalizeForEvent(event)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -285,24 +296,39 @@ func (s *server) createEvent(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &input, true) {
 		return
 	}
-	var idBytes [16]byte
-	if _, err := rand.Read(idBytes[:]); err != nil {
-		handleError(w, err)
-		return
-	}
 	email, _ := r.Context().Value(employeeContextKey{}).(string)
-	event, err := tracker.NewEvent(hex.EncodeToString(idBytes[:]), email, input, time.Now())
+	event, err := tracker.NewEvent("pending", email, input, time.Now())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := s.gateway.Create(r.Context(), event); err != nil {
+	// The workflow ID reserves the slug: a running or retained event with the
+	// same ID rejects the start, so try the next suffix.
+	for attempt := 0; ; attempt++ {
+		event.ID = tracker.Slug(event.Name, attempt)
+		if event.ID == "" || attempt >= maxSlugAttempts {
+			var idBytes [16]byte
+			if _, err := rand.Read(idBytes[:]); err != nil {
+				handleError(w, err)
+				return
+			}
+			event.ID = hex.EncodeToString(idBytes[:])
+		}
+		err = s.gateway.Create(r.Context(), event)
+		var started *serviceerror.WorkflowExecutionAlreadyStarted
+		if !errors.As(err, &started) || attempt >= maxSlugAttempts {
+			break
+		}
+	}
+	if err != nil {
 		handleError(w, err)
 		return
 	}
 	w.Header().Set("Location", "/api/admin/events/"+event.ID)
 	writeJSON(w, http.StatusCreated, event)
 }
+
+const maxSlugAttempts = 50
 
 func (s *server) adminEvent(w http.ResponseWriter, r *http.Request) {
 	event, err := s.getEvent(r)
@@ -391,6 +417,40 @@ func (s *server) banner(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, event)
 }
 
+func (s *server) form(w http.ResponseWriter, r *http.Request) {
+	id, err := eventID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var body struct {
+		Form tracker.Form `json:"form"`
+	}
+	if !s.decode(w, r, &body, true) {
+		return
+	}
+	form, err := body.Form.Normalize()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	existing, err := s.visibleEvent(r.Context(), id)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if existing.Status == "archived" {
+		writeError(w, http.StatusGone, "This event has completed; its questions cannot be changed.")
+		return
+	}
+	event, err := s.gateway.Form(r.Context(), id, form)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, event)
+}
+
 func (s *server) decode(w http.ResponseWriter, r *http.Request, target any, requireOrigin bool) bool {
 	origin := r.Header.Get("Origin")
 	if (requireOrigin && origin == "") || (origin != "" && origin != s.config.PublicURL) || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
@@ -443,7 +503,7 @@ func (s *server) qrImage(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	data, err := qrcode.EncodePNG(s.config.PublicURL+"/events/"+event.ID, 1024)
+	data, err := qrcode.EncodePNG(s.config.PublicURL+"/"+event.ID, 1024)
 	if err != nil {
 		handleError(w, err)
 		return

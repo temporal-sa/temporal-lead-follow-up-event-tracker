@@ -180,6 +180,27 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 		return Event{}, err
 	}
 	// Registering an additional handler emits no commands and preserves existing histories.
+	// Existing responses keep their answers; exports and the participant table follow the new form.
+	if err := workflow.SetUpdateHandlerWithOptions(ctx, "form", func(ctx workflow.Context, input Form) (Event, error) {
+		form, err := input.Normalize()
+		if err != nil {
+			return Event{}, temporal.NewApplicationError(err.Error(), "Invalid")
+		}
+		if err := mutex.Lock(ctx); err != nil {
+			return Event{}, err
+		}
+		defer mutex.Unlock()
+		if state.Event.DeletedAt != nil {
+			return Event{}, temporal.NewApplicationError("this event is no longer available", "Closed")
+		}
+		state.Event.Form = &form
+		state.Event.Revision++
+		operations++
+		return state.Event.At(workflow.Now(ctx)), nil
+	}, workflow.UpdateHandlerOptions{Validator: func(Form) error { return accepting() }}); err != nil {
+		return Event{}, err
+	}
+	// Registering an additional handler emits no commands and preserves existing histories.
 	if err := workflow.SetUpdateHandlerWithOptions(ctx, "delete", func(ctx workflow.Context) (Event, error) {
 		if err := mutex.Lock(ctx); err != nil {
 			return Event{}, err
