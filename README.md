@@ -140,8 +140,11 @@ across Continue-As-New, so a retried older HTTP request in that window cannot
 replace newer details. Beyond that window a replayed request is treated as a new
 submission; the email still deduplicates to one participant.
 
-Both workflow types Continue-As-New after 500 write operations or when Temporal
-recommends it. Participant children have `ABANDON` parent-close policy and stable
+Both workflow types Continue-As-New when Temporal suggests it (at about 4 MB or
+4K events of history, or 90% of the Update limit). The coordinator's history
+records each submission, but only for the current run; its locate step returns
+the participant's shard and a digest of their answers, not the answers
+themselves. Participant children have `ABANDON` parent-close policy and stable
 IDs; they remain alive when the coordinator continues. At final completion, the
 coordinator signals each shard to finish after its handlers drain. Temporal
 Visibility supplies the employee event directory, so newly created events may

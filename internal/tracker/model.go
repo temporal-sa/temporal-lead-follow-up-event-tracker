@@ -19,7 +19,6 @@ const (
 	DefaultTaskQueue  = "event-leads"
 	MaxParticipants   = 5000
 	MaxShardBytes     = 1024 * 1024
-	HistoryOperations = 500
 	RecentRequests    = 1024
 	PageSize          = 100
 )
@@ -194,9 +193,29 @@ type LocateInput struct {
 	Shards []string `json:"shards"`
 	Email  string   `json:"email"`
 }
+// LocatedLead is what the coordinator needs about an existing participant,
+// without copying their answers into its history.
 type LocatedLead struct {
-	ShardID string `json:"shardId"`
-	Lead    *Lead  `json:"lead,omitempty"`
+	ShardID          string    `json:"shardId"`
+	Found            bool      `json:"found,omitempty"`
+	RequestID        string    `json:"requestId,omitempty"`
+	FirstSubmittedAt time.Time `json:"firstSubmittedAt"`
+	Digest           string    `json:"digest,omitempty"`
+	// Lead is only present in results recorded before this was slimmed down.
+	// Resolved derives the same fields from it, so those histories replay unchanged.
+	Lead *Lead `json:"lead,omitempty"`
+}
+
+func (l LocatedLead) Resolved() LocatedLead {
+	if l.Lead != nil {
+		l.Found, l.RequestID, l.FirstSubmittedAt, l.Digest = true, l.Lead.RequestID, l.Lead.FirstSubmittedAt, l.Lead.Digest()
+		l.Lead = nil
+	}
+	return l
+}
+
+func (l Lead) Digest() string {
+	return Submission{Name: l.Name, Role: l.Role, Email: l.Email, Reason: l.Reason, Answers: l.Answers}.Digest()
 }
 type ShardPage struct {
 	Leads []Lead `json:"leads"`

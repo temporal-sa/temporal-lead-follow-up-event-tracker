@@ -342,16 +342,20 @@ func TestShardFinishesAtContinueAsNewBoundary(t *testing.T) {
 	suite := testsuite.WorkflowTestSuite{}
 	env := suite.NewTestWorkflowEnvironment()
 	env.RegisterDelayedCallback(func() {
-		for i := 1; i < HistoryOperations; i++ {
+		for i := 1; i < 5; i++ {
 			env.UpdateWorkflow("write", fmt.Sprint(i), &testsuite.TestUpdateCallback{OnComplete: func(_ any, err error) {
 				if err != nil {
 					t.Error(err)
 				}
 			}}, WriteCommand{Lead: Lead{Email: "p@example.com", Sequence: int64(i)}})
 		}
-		env.SignalWorkflowSkippingWorkflowTask("finish", nil)
-		env.UpdateWorkflow("write", "final", &testsuite.TestUpdateCallback{}, WriteCommand{Lead: Lead{Email: "p@example.com", Sequence: HistoryOperations}})
 	}, time.Second)
+	// Continue-As-New becomes due in the same task that delivers finish, as when the
+	// server suggests it on the task that also carries the signal.
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflowSkippingWorkflowTask("finish", nil)
+		env.UpdateWorkflow("write", "final", &testsuite.TestUpdateCallback{OnAccept: func() { env.SetContinueAsNewSuggested(true) }}, WriteCommand{Lead: Lead{Email: "p@example.com", Sequence: 5}})
+	}, 2*time.Second)
 	env.ExecuteWorkflow(ParticipantShardWorkflow, ShardState{EventID: "audit", Leads: []Lead{}})
 	var continuation *workflow.ContinueAsNewError
 	if errors.As(env.GetWorkflowError(), &continuation) {
@@ -363,8 +367,13 @@ func TestShardFinishesAtContinueAsNewBoundary(t *testing.T) {
 }
 
 func TestCustomSubmissionRetryIncludesAnswersAndPreservesDedupe(t *testing.T) {
-	for _, changed := range []bool{false, true} {
-		t.Run(fmt.Sprintf("changed=%t", changed), func(t *testing.T) {
+	// "recorded" is the full-record result in existing histories; "slim" is what LocateLead returns now.
+	for _, tc := range []struct {
+		format  string
+		changed bool
+	}{{"recorded", false}, {"recorded", true}, {"slim", false}, {"slim", true}} {
+		changed := tc.changed
+		t.Run(fmt.Sprintf("%s/changed=%t", tc.format, changed), func(t *testing.T) {
 			suite := testsuite.WorkflowTestSuite{}
 			env := suite.NewTestWorkflowEnvironment()
 			event := testEvent()
@@ -379,7 +388,11 @@ func TestCustomSubmissionRetryIncludesAnswersAndPreservesDedupe(t *testing.T) {
 			normalized, _ := input.NormalizeForEvent(event)
 			normalized.Answers = append(normalized.Answers, Answer{FieldID: "topic", Values: []string{"Temporal"}})
 			prior := Lead{Name: normalized.Name, Role: normalized.Role, Email: normalized.Email, RequestID: normalized.RequestID, Answers: normalized.Answers}
-			env.OnActivity("LocateLead", mock.Anything, mock.Anything).Return(LocatedLead{ShardID: "original", Lead: &prior}, nil)
+			located := LocatedLead{ShardID: "original", Lead: &prior}
+			if tc.format == "slim" {
+				located = LocatedLead{ShardID: "original", Found: true, RequestID: prior.RequestID, FirstSubmittedAt: prior.FirstSubmittedAt, Digest: prior.Digest()}
+			}
+			env.OnActivity("LocateLead", mock.Anything, mock.Anything).Return(located, nil)
 			env.OnSignalExternalWorkflow(mock.Anything, "original", "", "finish", mock.Anything).Return(nil)
 			if changed {
 				normalized.Answers = append([]Answer(nil), normalized.Answers...)

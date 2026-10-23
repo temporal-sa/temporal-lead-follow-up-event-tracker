@@ -173,14 +173,14 @@ func (s Service) lookupParticipant(ctx context.Context, input LookupParticipantI
 		return LookupParticipantResult{}, nexusError(err)
 	}
 	email := strings.ToLower(strings.TrimSpace(input.Email))
-	located, err := (&Activities{Client: s.Client}).LocateLead(ctx, LocateInput{Shards: event.Shards, Email: email})
+	_, lead, err := FindLead(ctx, s.Client, event.Shards, email)
 	if err != nil {
 		return LookupParticipantResult{}, nexusError(err)
 	}
-	if located.Lead == nil {
+	if lead == nil {
 		return LookupParticipantResult{Found: false}, nil
 	}
-	return LookupParticipantResult{Found: true, Name: located.Lead.Name, Role: located.Lead.Role, Email: located.Lead.Email}, nil
+	return LookupParticipantResult{Found: true, Name: lead.Name, Role: lead.Role, Email: lead.Email}, nil
 }
 
 func (s Service) claimFlightPass(ctx context.Context, input ClaimFlightPassInput, _ nexus.StartOperationOptions) (FlightPassProfile, error) {

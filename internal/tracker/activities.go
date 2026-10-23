@@ -10,20 +10,29 @@ import (
 type Activities struct{ Client client.Client }
 
 func (a *Activities) LocateLead(ctx context.Context, input LocateInput) (LocatedLead, error) {
-	for _, id := range input.Shards {
-		value, err := a.Client.QueryWorkflow(ctx, id, "", "find", input.Email)
+	id, lead, err := FindLead(ctx, a.Client, input.Shards, input.Email)
+	if err != nil || lead == nil {
+		return LocatedLead{}, err
+	}
+	return LocatedLead{ShardID: id, Found: true, RequestID: lead.RequestID, FirstSubmittedAt: lead.FirstSubmittedAt, Digest: lead.Digest()}, nil
+}
+
+// FindLead returns the shard holding email and the participant's full record, or a nil record.
+func FindLead(ctx context.Context, c client.Client, shards []string, email string) (string, *Lead, error) {
+	for _, id := range shards {
+		value, err := c.QueryWorkflow(ctx, id, "", "find", email)
 		if err != nil {
-			return LocatedLead{}, err
+			return "", nil, err
 		}
 		var lead *Lead
 		if err := value.Get(&lead); err != nil {
-			return LocatedLead{}, err
+			return "", nil, err
 		}
 		if lead != nil {
-			return LocatedLead{ShardID: id, Lead: lead}, nil
+			return id, lead, nil
 		}
 	}
-	return LocatedLead{}, nil
+	return "", nil, nil
 }
 
 func (a *Activities) WriteLead(ctx context.Context, command WriteCommand) (WriteResult, error) {

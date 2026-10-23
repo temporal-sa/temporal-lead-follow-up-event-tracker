@@ -9,7 +9,6 @@ import (
 )
 
 func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
-	operations := 0
 	rotating, retiring := false, false
 	mutex := workflow.NewMutex(ctx)
 	activityCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
@@ -66,13 +65,9 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 		if err := workflow.ExecuteActivity(activityCtx, "LocateLead", LocateInput{Shards: state.Event.Shards, Email: input.Email}).Get(ctx, &existing); err != nil {
 			return "", err
 		}
-		if existing.Lead != nil && existing.Lead.RequestID == input.RequestID {
-			changed := existing.Lead.Name != input.Name || existing.Lead.Role != input.Role || existing.Lead.Reason != input.Reason
-			if state.Event.Form != nil {
-				prior := Submission{Name: existing.Lead.Name, Role: existing.Lead.Role, Email: existing.Lead.Email, Reason: existing.Lead.Reason, Answers: existing.Lead.Answers}
-				changed = prior.Digest() != digest
-			}
-			if changed {
+		existing = existing.Resolved()
+		if existing.Found && existing.RequestID == input.RequestID {
+			if existing.Digest != digest {
 				return "", temporal.NewApplicationError("request ID was already used for different details", "Invalid")
 			}
 			return "saved", nil
@@ -81,8 +76,8 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 		state.Event.Revision++
 		now := workflow.Now(ctx)
 		lead := Lead{Name: input.Name, Role: input.Role, Email: input.Email, Reason: input.Reason, Answers: input.Answers, FirstSubmittedAt: now, LastSubmittedAt: now, Sequence: state.Sequence, RequestID: input.RequestID}
-		if existing.Lead != nil {
-			lead.FirstSubmittedAt = existing.Lead.FirstSubmittedAt
+		if existing.Found {
+			lead.FirstSubmittedAt = existing.FirstSubmittedAt
 		}
 		target := existing.ShardID
 		if target == "" && len(state.Event.Shards) > 0 {
@@ -126,14 +121,13 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 				}
 			}
 		}
-		if existing.Lead == nil {
+		if !existing.Found {
 			state.Event.Count++
 		}
 		state.Receipts = append(state.Receipts, Receipt{ID: input.RequestID, Digest: digest})
 		if len(state.Receipts) > RecentRequests {
 			state.Receipts = state.Receipts[len(state.Receipts)-RecentRequests:]
 		}
-		operations++
 		state.Event.Revision++
 		return "saved", nil
 	}, workflow.UpdateHandlerOptions{Validator: func(Submission) error { return accepting() }}); err != nil {
@@ -151,7 +145,6 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 			now := workflow.Now(ctx)
 			state.Event.EndedAt = &now
 			state.Event.Revision++
-			operations++
 		}
 		return state.Event.At(workflow.Now(ctx)), nil
 	}, workflow.UpdateHandlerOptions{Validator: accepting}); err != nil {
@@ -173,7 +166,6 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 		if state.Event.QRBanner != banner {
 			state.Event.QRBanner = banner
 			state.Event.Revision++
-			operations++
 		}
 		return state.Event.At(workflow.Now(ctx)), nil
 	}, workflow.UpdateHandlerOptions{Validator: func(string) error { return accepting() }}); err != nil {
@@ -195,7 +187,6 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 		}
 		state.Event.Form = &form
 		state.Event.Revision++
-		operations++
 		return state.Event.At(workflow.Now(ctx)), nil
 	}, workflow.UpdateHandlerOptions{Validator: func(Form) error { return accepting() }}); err != nil {
 		return Event{}, err
@@ -210,7 +201,6 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 			now := workflow.Now(ctx)
 			state.Event.DeletedAt = &now
 			state.Event.Revision++
-			operations++
 		}
 		return state.Event.At(workflow.Now(ctx)), nil
 	}, workflow.UpdateHandlerOptions{Validator: validator}); err != nil {
@@ -225,7 +215,7 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 	remaining := state.Event.CompletesAt.Sub(workflow.Now(ctx))
 	if remaining > 0 {
 		refresh, err := workflow.AwaitWithTimeout(ctx, remaining, func() bool {
-			return operations >= HistoryOperations || workflow.GetInfo(ctx).GetContinueAsNewSuggested()
+			return workflow.GetInfo(ctx).GetContinueAsNewSuggested()
 		})
 		if err != nil {
 			return Event{}, err
@@ -251,7 +241,6 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 }
 
 func ParticipantShardWorkflow(ctx workflow.Context, state ShardState) (int, error) {
-	operations := 0
 	finish := workflow.GetSignalChannel(ctx, "finish")
 	rotating := false
 	if err := workflow.SetQueryHandler(ctx, "find", func(email string) (*Lead, error) { return state.Find(email), nil }); err != nil {
@@ -275,7 +264,6 @@ func ParticipantShardWorkflow(ctx workflow.Context, state ShardState) (int, erro
 	if err := workflow.SetUpdateHandlerWithOptions(ctx, "write", func(ctx workflow.Context, command WriteCommand) (WriteResult, error) {
 		result, err := state.Apply(command)
 		if !result.Full && err == nil {
-			operations++
 		}
 		return result, err
 	}, workflow.UpdateHandlerOptions{Validator: func(WriteCommand) error {
@@ -290,7 +278,7 @@ func ParticipantShardWorkflow(ctx workflow.Context, state ShardState) (int, erro
 		return 0, err
 	}
 	if err := workflow.Await(ctx, func() bool {
-		return finish.Len() > 0 || operations >= HistoryOperations || workflow.GetInfo(ctx).GetContinueAsNewSuggested()
+		return finish.Len() > 0 || workflow.GetInfo(ctx).GetContinueAsNewSuggested()
 	}); err != nil {
 		return 0, err
 	}

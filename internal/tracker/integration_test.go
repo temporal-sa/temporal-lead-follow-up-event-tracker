@@ -148,7 +148,7 @@ func TestIntegrationContinueAsNewAndReplay(t *testing.T) {
 	if address == "" {
 		t.Skip("set TEMPORAL_INTEGRATION_ADDRESS to run against a local Temporal dev server")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 	c, err := client.DialContext(ctx, client.Options{HostPort: address, Namespace: "default"})
 	if err != nil {
@@ -172,7 +172,22 @@ func TestIntegrationContinueAsNewAndReplay(t *testing.T) {
 	}
 	defer c.CancelWorkflow(context.Background(), EventID(id), "")
 	var initialShardRun string
-	for i := 0; i <= HistoryOperations; i++ {
+	// Both Workflows continue as new only when Temporal suggests it, so submit until they have.
+	var parentRun, shardRun string
+	continued := func() bool {
+		parent, err := c.DescribeWorkflowExecution(ctx, EventID(id), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		shard, err := c.DescribeWorkflowExecution(ctx, ShardID(id, 0), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		parentRun, shardRun = parent.WorkflowExecutionInfo.Execution.RunId, shard.WorkflowExecutionInfo.Execution.RunId
+		return parentRun != run.GetRunID() && shardRun != initialShardRun
+	}
+	submitted := 0
+	for i := 0; i < 3000 && (i%50 != 0 || i == 0 || !continued()); i++ {
 		input := Submission{Name: fmt.Sprintf("Person %d", i), Role: "Engineer", Email: fmt.Sprintf("p%d@example.com", i), RequestID: fmt.Sprintf("continuation-request-%d", i)}
 		// A refreshing run can reject admission; retry the same request ID on the new run.
 		for {
@@ -202,18 +217,12 @@ func TestIntegrationContinueAsNewAndReplay(t *testing.T) {
 			initialShardRun = description.WorkflowExecutionInfo.Execution.RunId
 			defer c.CancelWorkflow(context.Background(), ShardID(id, 0), "")
 		}
+		submitted++
 	}
-	parent, err := c.DescribeWorkflowExecution(ctx, EventID(id), "")
-	if err != nil {
-		t.Fatal(err)
+	if !continued() {
+		t.Fatalf("parent and shard must both Continue-As-New within %d submissions", submitted)
 	}
-	shard, err := c.DescribeWorkflowExecution(ctx, ShardID(id, 0), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if parent.WorkflowExecutionInfo.Execution.RunId == run.GetRunID() || shard.WorkflowExecutionInfo.Execution.RunId == initialShardRun {
-		t.Fatal("parent and shard must both Continue-As-New")
-	}
+	t.Logf("coordinator and shard both continued as new after %d submissions", submitted)
 	query, err := c.QueryWorkflow(ctx, EventID(id), "", "event")
 	if err != nil {
 		t.Fatal(err)
@@ -222,13 +231,13 @@ func TestIntegrationContinueAsNewAndReplay(t *testing.T) {
 	if err := query.Get(&current); err != nil {
 		t.Fatal(err)
 	}
-	if current.Count != HistoryOperations+1 || len(current.Shards) != 1 {
+	if current.Count != submitted || len(current.Shards) != 1 {
 		t.Fatalf("state lost after continuation: %+v", current)
 	}
 	replayer := worker.NewWorkflowReplayer()
 	replayer.RegisterWorkflow(EventWorkflow)
 	replayer.RegisterWorkflow(ParticipantShardWorkflow)
-	for _, execution := range [][2]string{{EventID(id), run.GetRunID()}, {EventID(id), parent.WorkflowExecutionInfo.Execution.RunId}, {ShardID(id, 0), initialShardRun}, {ShardID(id, 0), shard.WorkflowExecutionInfo.Execution.RunId}} {
+	for _, execution := range [][2]string{{EventID(id), run.GetRunID()}, {EventID(id), parentRun}, {ShardID(id, 0), initialShardRun}, {ShardID(id, 0), shardRun}} {
 		iterator := c.GetWorkflowHistory(ctx, execution[0], execution[1], false, enums.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
 		history := &history.History{}
 		for iterator.HasNext() {
