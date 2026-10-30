@@ -4,27 +4,19 @@
 <head>
 <meta charset="utf-8">
 <style>
-  @font-face { font-family: Manrope; src: url("../internal/web/static/fonts/manrope-latin.woff2") format("woff2"); font-weight: 200 800; }
   html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; }
   body {
-    position: relative; font-family: Manrope, sans-serif; color: #fff; background: #141414;
+    display: flex; align-items: center; justify-content: center; background: #141414;
     background-image:
-      radial-gradient(circle at 82% 22%, rgba(124, 77, 255, .55), rgba(64, 60, 160, .28) 28%, transparent 58%),
+      radial-gradient(circle at 50% 50%, rgba(124, 77, 255, .45), rgba(64, 60, 160, .22) 32%, transparent 62%),
       linear-gradient(rgba(255, 255, 255, .035) 1px, transparent 1px),
       linear-gradient(90deg, rgba(255, 255, 255, .035) 1px, transparent 1px);
     background-size: auto, 60px 60px, 60px 60px;
   }
-  .lockup { position: absolute; left: 96px; top: 196px; display: flex; align-items: center; gap: 34px; }
-  .lockup img { width: 352px; height: 90px; }
-  .divider { width: 2px; height: 74px; background: rgba(255, 255, 255, .28); }
-  .product { font-size: 64px; font-weight: 300; letter-spacing: -.5px; }
-  .tagline { position: absolute; left: 100px; top: 340px; font-size: 34px; font-weight: 400; line-height: 1.4; color: #b8c2dc; }
-  .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 10px; background: linear-gradient(90deg, #444ce7, #7c4dff 55%, #b664ff); }
+  img { width: 516px; height: 132px; }
 </style>
 </head>
 <body>
-  <div class="lockup"><img src="../internal/web/static/temporal-logo.svg" alt=""><span class="divider"></span><span class="product">Event follow-up</span></div>
-  <p class="tagline">Let’s keep the conversation going.</p>
-  <div class="bar"></div>
+  <img src="../internal/web/static/temporal-logo.svg" alt="">
 </body>
 </html>

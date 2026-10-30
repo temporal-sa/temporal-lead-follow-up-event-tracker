@@ -36,7 +36,7 @@ Avoid: No background, stars, text, watermark, accessories, extra facial features
 
 ## Link preview image
 
-`internal/web/static/link-preview.png` is the 1200×630 image every event link shows when it unfurls in Slack and other apps. Its source is `docs/link-preview-image.html`, which uses the repo's Temporal logo and Manrope font. After editing it, regenerate the PNG from the repo root:
+`internal/web/static/link-preview.png` is the 1200×630 image every event link shows when it unfurls in Slack and other apps. Its source is `docs/link-preview-image.html`: the repo's Temporal logo, centered on a dark background. After editing it, regenerate the PNG from the repo root:
 
 ```sh
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --disable-gpu --hide-scrollbars \
