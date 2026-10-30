@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/temporal-sa/temporal-lead-follow-up-event-tracker/internal/tracker"
+	"go.temporal.io/api/serviceerror"
+	"go.temporal.io/sdk/temporal"
 )
 
 const (
@@ -345,6 +347,45 @@ func TestInternalOnlySubmissionUsesTheSignedInIdentity(t *testing.T) {
 				t.Fatalf("submission = %#v", g.submission)
 			}
 		})
+	}
+}
+
+func TestInternalOnlyEventShowsAnEarlierResponse(t *testing.T) {
+	responded := time.Date(2026, 10, 30, 15, 4, 0, 0, time.UTC)
+	g := &fakeGateway{
+		event:  tracker.Event{ID: "summit", Status: "open", InternalOnly: true, Shards: []string{"s0"}},
+		shards: map[string][]tracker.Lead{"s0": {{Email: "zoe@temporal.io", LastSubmittedAt: responded}}},
+	}
+	h := testHandlerWithVerifier(t, g, internalVerifier("Zoe"))
+	readParticipant := func() map[string]any {
+		t.Helper()
+		w := request(t, h, "GET", "/api/events/summit", "", validSession, "")
+		var body struct {
+			Participant map[string]any `json:"participant"`
+		}
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &body) != nil {
+			t.Fatalf("event = %d %s", w.Code, w.Body.String())
+		}
+		return body.Participant
+	}
+	if got := readParticipant()["respondedAt"]; got != "2026-10-30T15:04:00Z" {
+		t.Fatalf("respondedAt = %v", got)
+	}
+	g.shards["s0"][0].Email = "someone@temporal.io"
+	if got, found := readParticipant()["respondedAt"]; found {
+		t.Fatalf("respondedAt for a new participant = %v", got)
+	}
+	g.pageError = serviceerror.NewUnavailable("shard unavailable")
+	if w := request(t, h, "GET", "/api/events/summit", "", validSession, ""); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unavailable shard = %d %s", w.Code, w.Body.String())
+	}
+
+	form := tracker.DefaultForm()
+	g = &fakeGateway{event: tracker.Event{ID: "summit", Status: "open", InternalOnly: true, Form: &form}, submitError: temporal.NewApplicationError("you have already responded to this event", "AlreadyResponded")}
+	body := `{"answers":[{"fieldId":"role","values":["SA"]}],"requestId":"01234567-89ab-cdef-0123-456789abcdef"}`
+	w := request(t, testHandlerWithVerifier(t, g, internalVerifier("Zoe")), "POST", "/api/events/summit/participants", body, validSession, "https://leads.tmprl-demo.cloud")
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "already responded") {
+		t.Fatalf("second response = %d %s", w.Code, w.Body.String())
 	}
 }
 

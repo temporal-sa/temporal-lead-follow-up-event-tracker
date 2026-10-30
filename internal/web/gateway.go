@@ -33,6 +33,7 @@ type Gateway interface {
 	Details(context.Context, string, tracker.EventDetails) (tracker.Event, error)
 	Slug(context.Context, string, string) (tracker.Event, error)
 	Page(context.Context, string, int, int) (tracker.ShardPage, error)
+	FindLead(context.Context, []string, string) (*tracker.Lead, error)
 	Health(context.Context) error
 }
 
@@ -238,6 +239,14 @@ func (g *temporalGateway) Page(ctx context.Context, shardID string, offset, limi
 	}
 	err = result.Get(&page)
 	return page, err
+}
+
+// FindLead returns the participant with email in any of the shards, or nil.
+func (g *temporalGateway) FindLead(ctx context.Context, shards []string, email string) (*tracker.Lead, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, lead, err := tracker.FindLead(ctx, g.client, shards, email)
+	return lead, err
 }
 
 func (g *temporalGateway) Health(ctx context.Context) error {

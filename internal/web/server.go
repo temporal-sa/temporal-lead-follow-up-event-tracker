@@ -250,9 +250,12 @@ func (s *server) publicEvent(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	// RespondedAt is set when the employee has already responded; the event's
+	// workflow rejects a second response, so the page shows that up front.
 	type participant struct {
-		Name  string `json:"name,omitempty"`
-		Email string `json:"email"`
+		Name        string     `json:"name,omitempty"`
+		Email       string     `json:"email"`
+		RespondedAt *time.Time `json:"respondedAt,omitempty"`
 	}
 	var signedIn *participant
 	if event.InternalOnly {
@@ -260,7 +263,15 @@ func (s *server) publicEvent(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		signedIn = &participant{employee.Name, employee.Email}
+		lead, err := s.gateway.FindLead(r.Context(), event.Shards, employee.Email)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		signedIn = &participant{Name: employee.Name, Email: employee.Email}
+		if lead != nil {
+			signedIn.RespondedAt = &lead.LastSubmittedAt
+		}
 	}
 	writeJSON(w, http.StatusOK, struct {
 		ID           string       `json:"id"`
@@ -702,6 +713,8 @@ func handleError(w http.ResponseWriter, err error) {
 			status, message = http.StatusBadRequest, application.Message()
 		case "Closed":
 			status, message = http.StatusGone, application.Message()
+		case "AlreadyResponded":
+			status, message = http.StatusConflict, "You've already responded to this event."
 		case "Refreshing":
 			message = "Event is refreshing. Please retry shortly."
 		}

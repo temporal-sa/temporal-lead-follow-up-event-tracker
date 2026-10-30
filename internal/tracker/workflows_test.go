@@ -136,6 +136,51 @@ func TestCoordinatorRoutesDuplicateToOriginalShard(t *testing.T) {
 	env.AssertExpectations(t)
 }
 
+func TestInternalOnlyEventTakesOneResponsePerEmployee(t *testing.T) {
+	suite := testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+	event := testEvent()
+	event.Shards, event.InternalOnly, event.Count = []string{"s0"}, true, 1
+	env.SetStartTime(event.ClosesAt.Add(-24 * time.Hour))
+	env.RegisterActivity(&Activities{})
+	original, err := Submission{Name: "Zoe", Role: "SA", Email: "zoe@temporal.io", RequestID: "first-request-0000"}.NormalizeForEvent(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.OnActivity("LocateLead", mock.Anything, mock.Anything).Return(LocatedLead{ShardID: "s0", Found: true, RequestID: original.RequestID, Digest: original.Digest()}, nil)
+	env.OnSignalExternalWorkflow(mock.Anything, "s0", "", "finish", mock.Anything).Return(nil)
+	checked := 0
+	env.RegisterDelayedCallback(func() {
+		// The browser retrying the response it already sent is still acknowledged.
+		env.UpdateWorkflow("submit", "retry", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
+			if err != nil || value != "saved" {
+				t.Errorf("retry = %v, %v", value, err)
+			}
+			checked++
+		}}, original)
+		second := original
+		second.RequestID, second.Role = "second-request-000", "Manager"
+		env.UpdateWorkflow("submit", "second", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
+			var application *temporal.ApplicationError
+			if !errors.As(err, &application) || application.Type() != "AlreadyResponded" {
+				t.Errorf("second response err = %v", err)
+			}
+			checked++
+		}}, second)
+	}, time.Second)
+	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	var result Event
+	_ = env.GetWorkflowResult(&result)
+	if checked != 2 || result.Count != 1 {
+		t.Fatalf("checked=%d count=%d", checked, result.Count)
+	}
+	// WriteLead isn't mocked; reaching it would fail the second Update with a different error.
+	env.AssertExpectations(t)
+}
+
 func TestShardWritesAndFinish(t *testing.T) {
 	suite := testsuite.WorkflowTestSuite{}
 	env := suite.NewTestWorkflowEnvironment()

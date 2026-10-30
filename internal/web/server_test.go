@@ -144,6 +144,16 @@ func (g *fakeGateway) Page(_ context.Context, id string, offset, limit int) (tra
 	}
 	return tracker.ShardPage{Total: len(leads), Leads: leads[offset:min(len(leads), offset+limit)]}, nil
 }
+func (g *fakeGateway) FindLead(_ context.Context, shards []string, email string) (*tracker.Lead, error) {
+	for _, id := range shards {
+		for _, lead := range g.shards[id] {
+			if lead.Email == email {
+				return &lead, nil
+			}
+		}
+	}
+	return nil, g.pageError
+}
 func (g *fakeGateway) Health(context.Context) error { return nil }
 
 func testHandler(t *testing.T, g Gateway) http.Handler {

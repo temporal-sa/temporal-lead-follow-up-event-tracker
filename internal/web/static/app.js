@@ -145,6 +145,16 @@
     get("event-name").textContent = event.name;
     setDescription("event-description", event.description);
     get("participant-intro").hidden = Boolean(event.description);
+    const showResponded = (respondedAt) => {
+      get("participant-form").hidden = true;
+      get("participant-intro").hidden = true;
+      get("responded-message").textContent = `${respondedAt ? `We have your response from ${dateText(respondedAt)}. ` : ""}This event takes one response per person, so there’s nothing more to do.`;
+      get("event-responded").hidden = false;
+    };
+    if (event.participant?.respondedAt) {
+      showResponded(event.participant.respondedAt);
+      return;
+    }
     if (event.status !== "open") {
       get("participant-form").hidden = true;
       get("participant-intro").hidden = true;
@@ -182,7 +192,9 @@
         get("participant-success").focus();
         attempt = null;
       } catch (error) {
-        feedback("participant-feedback", failure(error), "error", true);
+        // Another tab or device answered first.
+        if (error.status === 409) showResponded();
+        else feedback("participant-feedback", failure(error), "error", true);
       } finally {
         submitting = false;
         get("participant-fields").disabled = false;

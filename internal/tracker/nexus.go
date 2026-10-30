@@ -142,6 +142,10 @@ func (s Service) submitParticipant(ctx context.Context, input SubmitParticipantI
 	if err != nil {
 		return SubmitParticipantResult{}, nexusError(err)
 	}
+	// Nexus callers carry no employee sign-in to answer an internal-only form with.
+	if event.InternalOnly {
+		return SubmitParticipantResult{}, nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "this event only takes responses from signed-in Temporal employees")
+	}
 	submission, err := input.Submission.WithoutStaleAnswers(event).NormalizeForEvent(event)
 	if err != nil {
 		return SubmitParticipantResult{}, nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "%s", err.Error())

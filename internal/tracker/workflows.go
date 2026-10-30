@@ -75,6 +75,11 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 			}
 			return "saved", nil
 		}
+		// An internal-only event takes one response per signed-in employee. A retry of
+		// the response itself was acknowledged above.
+		if existing.Found && state.Event.InternalOnly {
+			return "", temporal.NewApplicationError("you have already responded to this event", "AlreadyResponded")
+		}
 		state.Sequence++
 		state.Event.Revision++
 		now := workflow.Now(ctx)

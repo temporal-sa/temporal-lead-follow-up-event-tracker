@@ -137,8 +137,13 @@ both when the flag is set and on every later edit. Attendees see both answers
 filled from the catalog's verified identity, read-only, and the server replaces
 whatever was submitted for them, so a response is always recorded under the
 signed-in employee. When the catalog has no name for the employee, they type it.
-Responses collected before an event became internal-only keep their details. The
-link preview and QR image stay public.
+An internal-only event takes one response per employee: one who has already
+responded sees **You've already responded** with the time of their response
+instead of the form, and the event's Workflow rejects a second response, so a
+form left open in another tab can't replace the first. That includes a response
+collected under the same email before the event became internal-only; those keep
+their details. The Nexus `submit_participant` operation rejects internal-only
+events, since it carries no sign-in. The link preview and QR image stay public.
 
 Set a QR-page banner during event creation or update it from the event control
 panel while the event workflow is active. The fullscreen display includes Temporal
