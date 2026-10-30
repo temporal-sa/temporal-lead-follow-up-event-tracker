@@ -288,6 +288,10 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 			state.Event.Name, state.Event.Description = details.Name, details.Description
 			changed = true
 		}
+		if details.Subheading != nil && *details.Subheading != state.Event.EffectiveSubheading() {
+			state.Event.Subheading = details.Subheading
+			changed = true
+		}
 		if changed {
 			state.Event.Revision++
 		}

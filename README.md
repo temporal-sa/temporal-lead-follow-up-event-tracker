@@ -77,12 +77,15 @@ completion deadline. Events cannot reopen. New workflow runs use a single timer
 for completion; submission updates enforce the cutoff when they arrive, and the
 API derives the displayed status from the current time.
 
-Edit the name, welcome message, and end date under **Event details** on the event
-page. The name and welcome message can change until the event completes. The end
+Edit the name, subheading, welcome message, and end date under **Event details** on the event
+page. The subheading is the small line above the event name on the attendee form;
+it starts as "Let's stay in touch", and clearing it shows none. Events created
+before it was configurable keep showing the default until someone changes it.
+The name, subheading, and welcome message can change until the event completes. The end
 date can only change while submissions are open; moving it moves the close time
 and the seven-day completion with it, earlier or later. Once an event has ended,
 by date or with **End event**, its end date is fixed. To run it again, use
-**Duplicate event**, which opens the create form with the name, welcome message,
+**Duplicate event**, which opens the create form with the name, subheading, welcome message,
 questions, QR banner, and link preview filled in and the end date left blank.
 
 Change an event's link under **Event link**. The new slug follows the same rules as
@@ -106,7 +109,7 @@ without one, they see a default thank-you.
 
 To run the same event again, click **Export form** on the event page. It
 downloads a JSON file with the questions, sections, button text, confirmation
-message, welcome message, QR banner, and link preview. In a new event, click **Import form**
+message, subheading, welcome message, QR banner, and link preview. In a new event, click **Import form**
 to load that file, then choose the end date. The server validates the imported
 form like any other.
 

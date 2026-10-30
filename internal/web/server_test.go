@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -195,7 +196,7 @@ func TestPublicEventDoesNotLeakEmployeeOrParticipantState(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body) != 7 {
+	if len(body) != 8 {
 		t.Fatalf("public fields = %#v", body)
 	}
 	for _, key := range []string{"createdBy", "createdAt", "count", "shards", "revision", "busy", "completesAt", "qrBanner"} {
@@ -409,6 +410,43 @@ func TestLocalAuthMustStayOnLoopback(t *testing.T) {
 	w := request(t, h, "GET", "/api/admin/events", "", "", "")
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
+	}
+}
+
+func TestSubheadingIsSetAtCreationAndCanBeBlank(t *testing.T) {
+	const origin = "https://leads.tmprl-demo.cloud"
+	blank, custom := "", "Thanks for stopping by"
+	for _, tt := range []struct {
+		name, body string
+		stored     *string
+		public     string
+	}{
+		{"omitted", `{"name":"Summit","endDate":"2099-01-01"}`, nil, tracker.DefaultSubheading},
+		{"blank", `{"name":"Summit","endDate":"2099-01-01","subheading":"   "}`, &blank, ""},
+		{"custom", `{"name":"Summit","endDate":"2099-01-01","subheading":" Thanks for stopping by "}`, &custom, custom},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			g := &fakeGateway{}
+			w := request(t, testHandler(t, g), "POST", "/api/admin/events", tt.body, validSession, origin)
+			if w.Code != http.StatusCreated || g.created == nil || !reflect.DeepEqual(g.created.Subheading, tt.stored) {
+				t.Fatalf("create = %d %s, stored %v", w.Code, w.Body.String(), g.created)
+			}
+			g.event = *g.created
+			w = request(t, testHandler(t, g), "GET", "/api/events/"+g.event.ID, "", "", "")
+			var body struct{ Subheading *string }
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || body.Subheading == nil || *body.Subheading != tt.public {
+				t.Fatalf("public subheading = %s", w.Body.String())
+			}
+		})
+	}
+	g := &fakeGateway{event: tracker.Event{ID: "demo", Status: "open"}}
+	request(t, testHandler(t, g), "POST", "/api/admin/events/demo/details", `{"name":"Renamed","endDate":"2099-01-02","subheading":"  "}`, validSession, origin)
+	if len(g.details) != 1 || g.details[0].Subheading == nil || *g.details[0].Subheading != "" {
+		t.Fatalf("blank subheading not passed through: %+v", g.details)
+	}
+	w := request(t, testHandler(t, g), "POST", "/api/admin/events/demo/details", `{"name":"Renamed","endDate":"2099-01-02","subheading":"`+strings.Repeat("x", 121)+`"}`, validSession, origin)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("long subheading = %d", w.Code)
 	}
 }
 

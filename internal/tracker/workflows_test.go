@@ -806,6 +806,43 @@ func TestDetailsUpdateChangesTextWithoutANewTimer(t *testing.T) {
 	}
 }
 
+func TestDetailsUpdateSetsAndClearsTheSubheading(t *testing.T) {
+	suite := testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+	event := testEvent()
+	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
+	text := func(s string) *string { return &s }
+	steps := []struct {
+		subheading *string
+		want       string
+		revision   int64
+	}{
+		{nil, DefaultSubheading, 0},
+		{text(DefaultSubheading), DefaultSubheading, 0},
+		{text("  Thanks for stopping by  "), "Thanks for stopping by", 1},
+		{text(""), "", 2},
+		{nil, "", 2},
+	}
+	env.RegisterDelayedCallback(func() {
+		for _, step := range steps {
+			env.UpdateWorkflow("details", "", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				e := value.(Event)
+				if e.EffectiveSubheading() != step.want || e.Revision != step.revision {
+					t.Errorf("after %v: subheading=%q revision=%d, want %q and %d", step.subheading, e.EffectiveSubheading(), e.Revision, step.want, step.revision)
+				}
+			}}, EventDetails{Name: event.Name, EndDate: event.EndDate, Subheading: step.subheading})
+		}
+	}, time.Second)
+	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDetailsUpdateRejectsInvalidAndClosedChanges(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

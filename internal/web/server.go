@@ -276,6 +276,7 @@ func (s *server) publicEvent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, struct {
 		ID           string       `json:"id"`
 		Name         string       `json:"name"`
+		Subheading   string       `json:"subheading"`
 		Description  string       `json:"description"`
 		EndDate      string       `json:"endDate"`
 		ClosesAt     time.Time    `json:"closesAt"`
@@ -283,7 +284,7 @@ func (s *server) publicEvent(w http.ResponseWriter, r *http.Request) {
 		Form         tracker.Form `json:"form"`
 		InternalOnly bool         `json:"internalOnly,omitempty"`
 		Participant  *participant `json:"participant,omitempty"`
-	}{event.ID, event.Name, event.Description, event.EndDate, event.ClosesAt, event.Status, event.EffectiveForm(), event.InternalOnly, signedIn})
+	}{event.ID, event.Name, event.EffectiveSubheading(), event.Description, event.EndDate, event.ClosesAt, event.Status, event.EffectiveForm(), event.InternalOnly, signedIn})
 }
 
 func (s *server) submit(w http.ResponseWriter, r *http.Request) {

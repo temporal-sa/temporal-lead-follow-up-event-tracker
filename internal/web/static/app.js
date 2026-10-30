@@ -65,7 +65,10 @@
   };
   // A form export holds everything needed to set up the same event again, except its dates.
   const formExportKind = "temporal-event-form";
-  const exportedEvent = (event) => ({ kind: formExportKind, version: 1, exportedAt: new Date().toISOString(), name: event.name, description: event.description || "", qrBanner: event.qrBanner || "", preview: { title: event.preview?.title || "", description: event.preview?.description || "" }, internalOnly: Boolean(event.internalOnly), form: event.form || EventForms.defaultForm() });
+  // Matches tracker.DefaultSubheading, which events created before the setting still show.
+  const defaultSubheading = "Let's stay in touch";
+  const subheadingOf = (event) => event.subheading ?? defaultSubheading;
+  const exportedEvent = (event) => ({ kind: formExportKind, version: 1, exportedAt: new Date().toISOString(), name: event.name, subheading: subheadingOf(event), description: event.description || "", qrBanner: event.qrBanner || "", preview: { title: event.preview?.title || "", description: event.preview?.description || "" }, internalOnly: Boolean(event.internalOnly), form: event.form || EventForms.defaultForm() });
   // Duplicate event hands the same export to the create form across one navigation.
   const duplicateKey = "duplicate-event";
   const download = (blob, filename) => {
@@ -142,6 +145,7 @@
     }
     document.title = `${event.name} · Temporal follow-up`;
     render("participant-template");
+    setDescription("event-subheading", event.subheading);
     get("event-name").textContent = event.name;
     setDescription("event-description", event.description);
     get("participant-intro").hidden = Boolean(event.description);
@@ -265,6 +269,7 @@
       if (!hidden) get("create-name").focus();
     });
     get("cancel-create").addEventListener("click", hideCreate);
+    get("create-subheading").value = defaultSubheading;
     let formBuilder = EventForms.builder(get("form-builder"));
     get("create-internal-only").addEventListener("change", () => formBuilder.setInternalOnly(get("create-internal-only").checked));
     // Fills the create form from an export; the end date is always left for the employee to choose.
@@ -272,6 +277,7 @@
       if (typeof source.internalOnly === "boolean") get("create-internal-only").checked = source.internalOnly;
       formBuilder = EventForms.builder(get("form-builder"), source.form, { internalOnly: get("create-internal-only").checked });
       if (typeof source.name === "string") get("create-name").value = source.name;
+      if (typeof source.subheading === "string") get("create-subheading").value = source.subheading;
       if (typeof source.description === "string") get("create-description").value = source.description;
       if (typeof source.qrBanner === "string") {
         get("create-qr-banner").value = source.qrBanner;
@@ -335,7 +341,7 @@
       if (formProblem) { feedback("create-feedback", formProblem, "error", true); return; }
       if (!submission.currentTarget.reportValidity()) return;
       const values = new FormData(submission.currentTarget);
-      const body = { name: String(values.get("name") || "").trim(), description: String(values.get("description") || "").trim(), endDate: values.get("endDate"), form: formBuilder.value(), qrBanner: get("create-qr-banner").value.trim(), preview: { title: get("create-preview-title").value.trim(), description: get("create-preview-description").value.trim() }, internalOnly: get("create-internal-only").checked };
+      const body = { name: String(values.get("name") || "").trim(), subheading: get("create-subheading").value.trim(), description: String(values.get("description") || "").trim(), endDate: values.get("endDate"), form: formBuilder.value(), qrBanner: get("create-qr-banner").value.trim(), preview: { title: get("create-preview-title").value.trim(), description: get("create-preview-description").value.trim() }, internalOnly: get("create-internal-only").checked };
       if (!body.name) {
         feedback("create-feedback", "Please enter an event name.", "error", true);
         return;
@@ -411,6 +417,7 @@
     // Inputs are filled on load and after their own save, so another save can't overwrite unsaved edits.
     const fillDetails = () => {
       get("detail-edit-name").value = event.name;
+      get("detail-edit-subheading").value = subheadingOf(event);
       get("detail-edit-description").value = event.description || "";
       get("detail-edit-end-date").value = event.endDate;
     };
@@ -448,6 +455,7 @@
         const endDateChanged = get("detail-edit-end-date").value !== event.endDate;
         event = await post(`${url}/details`, {
           name: get("detail-edit-name").value.trim(),
+          subheading: get("detail-edit-subheading").value.trim(),
           description: get("detail-edit-description").value.trim(),
           endDate: get("detail-edit-end-date").value,
         });

@@ -50,6 +50,19 @@ type Event struct {
 	// InternalOnly events accept responses only from signed-in employees, whose
 	// name and email come from the catalog instead of the form. Once set, it stays.
 	InternalOnly bool `json:"internalOnly,omitempty"`
+	// Subheading sits above the event name on the attendee form. Nil means
+	// DefaultSubheading; an empty string shows none.
+	Subheading *string `json:"subheading,omitempty"`
+}
+
+const DefaultSubheading = "Let's stay in touch"
+
+// EffectiveSubheading is what the attendee form shows above the event name.
+func (e Event) EffectiveSubheading() string {
+	if e.Subheading == nil {
+		return DefaultSubheading
+	}
+	return *e.Subheading
 }
 
 // LinkPreview is the title and description an event's link shows when it is
@@ -118,13 +131,16 @@ type CreateEvent struct {
 	QRBanner     string       `json:"qrBanner,omitempty"`
 	Preview      *LinkPreview `json:"preview,omitempty"`
 	InternalOnly bool         `json:"internalOnly,omitempty"`
+	Subheading   *string      `json:"subheading,omitempty"`
 }
 
 // EventDetails are the fields an employee sets at creation and can edit later.
+// A nil Subheading leaves the current one unchanged.
 type EventDetails struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	EndDate     string `json:"endDate"`
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	EndDate     string  `json:"endDate"`
+	Subheading  *string `json:"subheading,omitempty"`
 }
 
 // Normalize trims and validates the details, and returns when submissions close.
@@ -139,6 +155,13 @@ func (d EventDetails) Normalize() (EventDetails, time.Time, error) {
 	if utf8.RuneCountInString(d.Description) > 1000 {
 		return d, time.Time{}, errors.New("description must be at most 1,000 characters")
 	}
+	if d.Subheading != nil {
+		subheading := strings.TrimSpace(*d.Subheading)
+		if utf8.RuneCountInString(subheading) > 120 {
+			return d, time.Time{}, errors.New("subheading must be at most 120 characters")
+		}
+		d.Subheading = &subheading
+	}
 	date, err := time.Parse("2006-01-02", d.EndDate)
 	if err != nil {
 		return d, time.Time{}, errors.New("end date must be YYYY-MM-DD")
@@ -149,7 +172,7 @@ func (d EventDetails) Normalize() (EventDetails, time.Time, error) {
 var errEndDatePassed = errors.New("end date has already passed in UTC")
 
 func NewEvent(id, employee string, input CreateEvent, now time.Time) (Event, error) {
-	details, closes, err := EventDetails{Name: input.Name, Description: input.Description, EndDate: input.EndDate}.Normalize()
+	details, closes, err := EventDetails{Name: input.Name, Description: input.Description, EndDate: input.EndDate, Subheading: input.Subheading}.Normalize()
 	if err != nil {
 		return Event{}, err
 	}
@@ -184,7 +207,7 @@ func NewEvent(id, employee string, input CreateEvent, now time.Time) (Event, err
 			preview = &normalized
 		}
 	}
-	return Event{ID: id, Name: input.Name, Description: input.Description, EndDate: input.EndDate, CreatedBy: employee, CreatedAt: now.UTC(), ClosesAt: closes, CompletesAt: closes.AddDate(0, 0, 7), Shards: []string{}, Status: "open", Form: &form, QRBanner: banner, Preview: preview, InternalOnly: input.InternalOnly}, nil
+	return Event{ID: id, Name: input.Name, Description: input.Description, EndDate: input.EndDate, CreatedBy: employee, CreatedAt: now.UTC(), ClosesAt: closes, CompletesAt: closes.AddDate(0, 0, 7), Shards: []string{}, Status: "open", Form: &form, QRBanner: banner, Preview: preview, InternalOnly: input.InternalOnly, Subheading: details.Subheading}, nil
 }
 
 type Submission struct {
