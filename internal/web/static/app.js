@@ -34,6 +34,7 @@
     if (!response.ok) {
       const error = new Error(data.error || (response.status === 401 || response.status === 403 ? "Your employee session has expired. Sign in again to continue." : "Something went wrong. Please try again."));
       error.status = response.status;
+      error.loginUrl = data.loginUrl;
       throw error;
     }
     return data;
@@ -64,7 +65,7 @@
   };
   // A form export holds everything needed to set up the same event again, except its dates.
   const formExportKind = "temporal-event-form";
-  const exportedEvent = (event) => ({ kind: formExportKind, version: 1, exportedAt: new Date().toISOString(), name: event.name, description: event.description || "", qrBanner: event.qrBanner || "", preview: { title: event.preview?.title || "", description: event.preview?.description || "" }, form: event.form || EventForms.defaultForm() });
+  const exportedEvent = (event) => ({ kind: formExportKind, version: 1, exportedAt: new Date().toISOString(), name: event.name, description: event.description || "", qrBanner: event.qrBanner || "", preview: { title: event.preview?.title || "", description: event.preview?.description || "" }, internalOnly: Boolean(event.internalOnly), form: event.form || EventForms.defaultForm() });
   // Duplicate event hands the same export to the create form across one navigation.
   const duplicateKey = "duplicate-event";
   const download = (blob, filename) => {
@@ -131,6 +132,11 @@
     let event;
     try { event = await api(`/api/events/${encodeURIComponent(id)}`); }
     catch (error) {
+      if (error.status === 401 && error.loginUrl) {
+        render("internal-sign-in-template");
+        get("internal-sign-in").href = error.loginUrl;
+        return;
+      }
       errorPage(error.status === 404 ? "Event unavailable" : "Unable to load this event", error.status === 404 ? "Check the event link or ask the Temporal team for a new QR code." : failure(error), error.status !== 404);
       return;
     }
@@ -147,7 +153,12 @@
     }
     let attempt = null;
     let submitting = false;
-    const navigator = EventForms.mountParticipant(get("participant-fields"), event.form);
+    const locked = {};
+    if (event.participant) {
+      locked.email = event.participant.email;
+      if (event.participant.name) locked.name = event.participant.name;
+    }
+    const navigator = EventForms.mountParticipant(get("participant-fields"), event.form, { locked });
     get("participant-form").addEventListener("submit", async (submission) => {
       submission.preventDefault();
       if (submitting) return;
@@ -254,6 +265,7 @@
       }
       if (typeof source.preview?.title === "string") get("create-preview-title").value = source.preview.title;
       if (typeof source.preview?.description === "string") get("create-preview-description").value = source.preview.description;
+      if (typeof source.internalOnly === "boolean") get("create-internal-only").checked = source.internalOnly;
       get("create-template-badge").textContent = badgeText;
       return formBuilder.validate();
     };
@@ -310,7 +322,7 @@
       if (formProblem) { feedback("create-feedback", formProblem, "error", true); return; }
       if (!submission.currentTarget.reportValidity()) return;
       const values = new FormData(submission.currentTarget);
-      const body = { name: String(values.get("name") || "").trim(), description: String(values.get("description") || "").trim(), endDate: values.get("endDate"), form: formBuilder.value(), qrBanner: get("create-qr-banner").value.trim(), preview: { title: get("create-preview-title").value.trim(), description: get("create-preview-description").value.trim() } };
+      const body = { name: String(values.get("name") || "").trim(), description: String(values.get("description") || "").trim(), endDate: values.get("endDate"), form: formBuilder.value(), qrBanner: get("create-qr-banner").value.trim(), preview: { title: get("create-preview-title").value.trim(), description: get("create-preview-description").value.trim() }, internalOnly: get("create-internal-only").checked };
       if (!body.name) {
         feedback("create-feedback", "Please enter an event name.", "error", true);
         return;
@@ -364,6 +376,7 @@
       }
       get("detail-lifecycle").textContent = lifecycle;
       get("detail-lifecycle").hidden = !lifecycle;
+      get("detail-internal").hidden = !event.internalOnly;
       // Only the end date locks when submissions close; the text stays editable until the event completes.
       const open = event.status === "open";
       get("details-fields").disabled = event.status === "archived";

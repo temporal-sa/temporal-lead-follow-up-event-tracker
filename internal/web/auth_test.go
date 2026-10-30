@@ -2,10 +2,12 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -248,5 +250,107 @@ func TestAuthenticationURLs(t *testing.T) {
 	}
 	if _, err := New(Config{PublicURL: "https://leads.tmprl-demo.cloud"}, &fakeGateway{}); err != nil {
 		t.Fatalf("default verifier should not require a signing key: %v", err)
+	}
+}
+
+// internalVerifier signs in validSession as an employee; the catalog sends the
+// name header Latin-1 encoded, as its Python server does.
+func internalVerifier(name string) verifierTransport {
+	return func(r *http.Request) (*http.Response, error) {
+		cookie, err := r.Cookie("temporal_demo_auth")
+		if err != nil || cookie.Value != validSession {
+			return verifierResponse(http.StatusFound, "", ""), nil
+		}
+		response := verifierResponse(http.StatusNoContent, "google:employee-id", "Zoe@Temporal.io")
+		if name != "" {
+			response.Header.Set("X-Temporal-Auth-Name", name)
+		}
+		return response, nil
+	}
+}
+
+func TestInternalOnlyEventRequiresAnEmployee(t *testing.T) {
+	g := &fakeGateway{event: tracker.Event{ID: "summit", Slug: "summit-2026", Name: "Summit", Status: "open", InternalOnly: true}}
+	h := testHandlerWithVerifier(t, g, internalVerifier("Zo\xeb M\xfcller"))
+	for _, path := range []string{"/api/events/summit", "/api/events/old-link"} {
+		w := request(t, h, "GET", path, "", "", "")
+		var denied struct {
+			Error    string `json:"error"`
+			LoginURL string `json:"loginUrl"`
+		}
+		if w.Code != http.StatusUnauthorized || json.Unmarshal(w.Body.Bytes(), &denied) != nil || strings.Contains(w.Body.String(), "Summit") {
+			t.Fatalf("anonymous %s = %d %s", path, w.Code, w.Body.String())
+		}
+		login, err := url.Parse(denied.LoginURL)
+		if err != nil || login.Path != "/auth/login" || login.Query().Get("return_to") != "https://leads.tmprl-demo.cloud/summit-2026" {
+			t.Fatalf("login URL = %q", denied.LoginURL)
+		}
+	}
+	w := request(t, h, "GET", "/api/events/summit", "", validSession, "")
+	var event struct {
+		InternalOnly bool `json:"internalOnly"`
+		Participant  struct {
+			Name  string `json:"name"`
+			Email string `json:"email"`
+		} `json:"participant"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &event) != nil || !event.InternalOnly || event.Participant.Name != "Zoë Müller" || event.Participant.Email != "zoe@temporal.io" {
+		t.Fatalf("employee event = %d %s", w.Code, w.Body.String())
+	}
+
+	visitor := testHandlerWithVerifier(t, g, verifierTransport(func(*http.Request) (*http.Response, error) {
+		return verifierResponse(http.StatusNoContent, "google:visitor-id", "visitor@example.com"), nil
+	}))
+	if w := request(t, visitor, "GET", "/api/events/summit", "", validSession, ""); w.Code != http.StatusUnauthorized {
+		t.Fatalf("non-employee event = %d %s", w.Code, w.Body.String())
+	}
+	down := testHandlerWithVerifier(t, g, verifierTransport(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("catalog unavailable")
+	}))
+	if w := request(t, down, "GET", "/api/events/summit", "", validSession, ""); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("verifier outage = %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestInternalOnlySubmissionUsesTheSignedInIdentity(t *testing.T) {
+	const origin = "https://leads.tmprl-demo.cloud"
+	form := tracker.DefaultForm()
+	event := tracker.Event{ID: "summit", Name: "Summit", Status: "open", InternalOnly: true, Form: &form}
+	body := `{"answers":[{"fieldId":"name","values":["Someone Else"]},{"fieldId":"role","values":["SA"]},{"fieldId":"email","values":["someone@example.com"]}],"requestId":"01234567-89ab-cdef-0123-456789abcdef"}`
+	tests := []struct {
+		name, token, origin, catalogName string
+		want                             int
+		wantName                         string
+	}{
+		{"no session", "", origin, "Zoe", http.StatusUnauthorized, ""},
+		{"no origin", validSession, "", "Zoe", http.StatusForbidden, ""},
+		{"employee", validSession, origin, "Zoe Jones", http.StatusOK, "Zoe Jones"},
+		{"catalog has no name", validSession, origin, "", http.StatusOK, "Someone Else"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := &fakeGateway{event: event}
+			w := request(t, testHandlerWithVerifier(t, g, internalVerifier(tt.catalogName)), "POST", "/api/events/summit/participants", body, tt.token, tt.origin)
+			if w.Code != tt.want {
+				t.Fatalf("status = %d, want %d: %s", w.Code, tt.want, w.Body.String())
+			}
+			if tt.want != http.StatusOK {
+				if g.submission != nil {
+					t.Fatalf("rejected submission was saved: %#v", g.submission)
+				}
+				return
+			}
+			if g.submission == nil || g.submission.Email != "zoe@temporal.io" || g.submission.Name != tt.wantName || g.submission.Role != "SA" {
+				t.Fatalf("submission = %#v", g.submission)
+			}
+		})
+	}
+}
+
+func TestCreateInternalOnlyEvent(t *testing.T) {
+	g := &fakeGateway{}
+	w := request(t, testHandler(t, g), "POST", "/api/admin/events", `{"name":"Summit","endDate":"2099-01-01","internalOnly":true}`, validSession, "https://leads.tmprl-demo.cloud")
+	if w.Code != http.StatusCreated || g.created == nil || !g.created.InternalOnly || !strings.Contains(w.Body.String(), `"internalOnly":true`) {
+		t.Fatalf("create = %d %s", w.Code, w.Body.String())
 	}
 }

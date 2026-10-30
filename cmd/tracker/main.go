@@ -51,7 +51,8 @@ func run() error {
 	defer c.Close()
 	taskQueue := env("TEMPORAL_TASK_QUEUE", tracker.DefaultTaskQueue)
 	if mode == "worker" || mode == "dev" {
-		options := worker.Options{}
+		// The employee event list queries a page of events at once, and each query is a workflow task.
+		options := worker.Options{WorkflowTaskPollerBehavior: worker.NewPollerBehaviorAutoscaling(worker.PollerBehaviorAutoscalingOptions{InitialNumberOfPollers: 10, MinimumNumberOfPollers: 10})}
 		deployment, build := os.Getenv("TEMPORAL_DEPLOYMENT_NAME"), os.Getenv("TEMPORAL_WORKER_BUILD_ID")
 		if deployment != "" || build != "" {
 			if deployment == "" || build == "" {

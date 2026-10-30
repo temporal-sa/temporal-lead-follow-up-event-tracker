@@ -139,8 +139,8 @@ func newHandler(config Config, gateway Gateway, authTransport http.RoundTripper)
 	}), nil
 }
 
-func (s *server) loginURL() string {
-	return s.config.AuthBaseURL + "/auth/login?" + url.Values{"return_to": {s.config.PublicURL + "/admin"}}.Encode()
+func (s *server) loginURL(path string) string {
+	return s.config.AuthBaseURL + "/auth/login?" + url.Values{"return_to": {s.config.PublicURL + path}}.Encode()
 }
 
 func (s *server) ready(w http.ResponseWriter, r *http.Request) {
@@ -154,7 +154,7 @@ func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) session(w http.ResponseWriter, r *http.Request) {
-	email, err := s.employee(r)
+	employee, err := s.employee(r)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, errAuthUnavailable.Error())
 		return
@@ -163,7 +163,7 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 		Authenticated bool   `json:"authenticated"`
 		Email         string `json:"email,omitempty"`
 		LoginURL      string `json:"loginUrl"`
-	}{email != "", email, s.loginURL()})
+	}{employee.Email != "", employee.Email, s.loginURL("/admin")})
 }
 
 var indexTemplate = template.Must(template.ParseFS(assets, "static/index.html"))
@@ -250,15 +250,29 @@ func (s *server) publicEvent(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	type participant struct {
+		Name  string `json:"name,omitempty"`
+		Email string `json:"email"`
+	}
+	var signedIn *participant
+	if event.InternalOnly {
+		employee, ok := s.internalParticipant(w, r, event)
+		if !ok {
+			return
+		}
+		signedIn = &participant{employee.Name, employee.Email}
+	}
 	writeJSON(w, http.StatusOK, struct {
-		ID          string       `json:"id"`
-		Name        string       `json:"name"`
-		Description string       `json:"description"`
-		EndDate     string       `json:"endDate"`
-		ClosesAt    time.Time    `json:"closesAt"`
-		Status      string       `json:"status"`
-		Form        tracker.Form `json:"form"`
-	}{event.ID, event.Name, event.Description, event.EndDate, event.ClosesAt, event.Status, event.EffectiveForm()})
+		ID           string       `json:"id"`
+		Name         string       `json:"name"`
+		Description  string       `json:"description"`
+		EndDate      string       `json:"endDate"`
+		ClosesAt     time.Time    `json:"closesAt"`
+		Status       string       `json:"status"`
+		Form         tracker.Form `json:"form"`
+		InternalOnly bool         `json:"internalOnly,omitempty"`
+		Participant  *participant `json:"participant,omitempty"`
+	}{event.ID, event.Name, event.Description, event.EndDate, event.ClosesAt, event.Status, event.EffectiveForm(), event.InternalOnly, signedIn})
 }
 
 func (s *server) submit(w http.ResponseWriter, r *http.Request) {
@@ -275,6 +289,19 @@ func (s *server) submit(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		handleError(w, err)
 		return
+	}
+	if event.InternalOnly {
+		// A submission that carries the employee's cookie is held to the same
+		// origin rule as admin mutations.
+		if r.Header.Get("Origin") == "" {
+			writeError(w, http.StatusForbidden, "Submit this request from the event tracker page.")
+			return
+		}
+		employee, ok := s.internalParticipant(w, r, event)
+		if !ok {
+			return
+		}
+		input = input.WithParticipant(event, employee.Name, employee.Email)
 	}
 	input, err = input.WithoutStaleAnswers(event).NormalizeForEvent(event)
 	if err != nil {

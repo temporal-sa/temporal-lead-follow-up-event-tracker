@@ -14,7 +14,7 @@ The demo makes three problems visible:
 
 ## Before you start
 
-- **On tmprl-demo.cloud:** open https://events.tmprl-demo.cloud/admin and sign in with your `temporal.io` account through the catalog. The attendee form and QR image are public; everything under `/admin` needs that login.
+- **On tmprl-demo.cloud:** open https://events.tmprl-demo.cloud/admin and sign in with your `temporal.io` account through the catalog. The attendee form and QR image are public, except that an event created as **Internal only** asks attendees to sign in the same way; everything under `/admin` needs that login.
   - The hosted demo holds real event leads from real events. Create a test event for the walkthrough, use a test email, and delete the event afterwards (see [Reset and tear down](#reset-and-tear-down)). Anyone with access to the project's Temporal Cloud Namespace can read submissions in Workflow histories.
   - To show the Workflows, you need access to the project's Temporal Cloud Namespace. The catalog creates it; this repo doesn't name it.
 - **To run it locally:** install Go 1.26 or later and the [Temporal CLI](https://docs.temporal.io/cli), and clone the repo. No accounts or keys are needed.
@@ -358,6 +358,7 @@ When someone asks what they'd change for their own system, these are the parts t
 |---|---|---|
 | `make preview` says `Port 8080 is already in use` | Another app holds the port | Set `PREVIEW_PORT`, for example `PREVIEW_PORT=8090 make preview`, and open that port |
 | **Sign in to manage events.** on `/admin` | No employee session: locally you're not using `make preview` or `make dev`; on tmprl-demo.cloud you haven't signed in | Use `make preview` locally; on the hosted demo click **Employee sign in** and use your `temporal.io` account |
+| **Sign in to respond.** on an attendee form | The event was created as **Internal only**, and the visitor has no `temporal.io` session | Click **Sign in with Temporal**; the catalog returns to the form. Locally, `make preview` is always signed in, and its identity has no name, so the Name question stays editable |
 | A phone can't open the QR code locally | The QR code points at `http://localhost:8080` | Use **Open attendee form ↗** or **Copy form link** in a browser on the same machine |
 | "end date has already passed in UTC" when creating | The last day is before today in UTC | Pick today's UTC date or later |
 | "Temporal is temporarily unavailable. Please retry." on the form or control panel | The Worker isn't running, so the event Workflow can't answer Queries or Updates | Start the Worker (it's part of `make preview` and `make dev`); the attendee can submit again with the same details |

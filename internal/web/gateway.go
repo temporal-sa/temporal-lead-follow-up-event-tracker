@@ -15,6 +15,7 @@ import (
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"golang.org/x/sync/errgroup"
 )
 
 // Gateway keeps HTTP concerns outside the durable event workflows.
@@ -74,21 +75,36 @@ func (g *temporalGateway) List(ctx context.Context, cursor string) ([]tracker.Ev
 	if err != nil {
 		return nil, "", err
 	}
-	events := make([]tracker.Event, 0, len(result.Executions))
-	for _, execution := range result.Executions {
+	// Each event is a separate query round trip, so the page runs them together.
+	// The page size bounds how many run at once.
+	found := make([]*tracker.Event, len(result.Executions))
+	group, groupCtx := errgroup.WithContext(ctx)
+	for i, execution := range result.Executions {
 		if execution.Status != enums.WORKFLOW_EXECUTION_STATUS_RUNNING && execution.Status != enums.WORKFLOW_EXECUTION_STATUS_COMPLETED {
 			continue
 		}
 		id := strings.TrimPrefix(execution.GetExecution().GetWorkflowId(), "event/")
-		event, err := g.Event(ctx, id)
-		var missing *serviceerror.NotFound
-		if errors.As(err, &missing) || errors.Is(err, errDeleted) {
-			continue
+		group.Go(func() error {
+			event, err := g.Event(groupCtx, id)
+			var missing *serviceerror.NotFound
+			if errors.As(err, &missing) || errors.Is(err, errDeleted) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			found[i] = &event
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return nil, "", err
+	}
+	events := make([]tracker.Event, 0, len(found))
+	for _, event := range found {
+		if event != nil {
+			events = append(events, *event)
 		}
-		if err != nil {
-			return nil, "", err
-		}
-		events = append(events, event)
 	}
 	return events, base64.RawURLEncoding.EncodeToString(result.NextPageToken), nil
 }

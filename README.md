@@ -123,6 +123,16 @@ current form, so answers to a removed question no longer appear there. A form
 opened before an edit can still be submitted: answers to removed questions are
 dropped, and newly required questions must be answered.
 
+Check **Internal only** when creating an event for a Temporal-only audience. The
+flag is fixed at creation; **Duplicate event**, export, and import carry it. Its
+form then requires the same employee sign-in as the control panel: a visitor
+without one sees **Sign in to respond.** and a catalog login that returns to the
+event's current link. The email question, and the Name question while it is a
+short answer, are filled from the catalog's verified identity and are read-only.
+The server replaces whatever was submitted for them, so a response is always
+recorded under the signed-in employee. When the catalog has no name for the
+employee, they type it. The link preview and QR image stay public.
+
 Set a QR-page banner during event creation or update it from the event control
 panel while the event workflow is active. The fullscreen display includes Temporal
 branding, the event name, banner, and a QR code linking to the public form. It
@@ -220,8 +230,11 @@ catalog's bootstrap identity is not accepted. No signing key is shared with this
 app. Identity headers supplied by visitors and participant-entered emails cannot
 grant admin access. Verification runs on every protected request with a
 three-second timeout and no redirect following. A verifier outage blocks admin
-access with `503`; public forms and submissions do not call the verifier. Admin
-mutations require same-origin JSON requests. Public event URLs always show the
+access with `503`; public forms and submissions do not call the verifier, except
+on internal-only events, where an outage blocks the form the same way. The
+employee's name comes from the verifier's optional `X-Temporal-Auth-Name`
+header, decoded as Latin-1 when it is not UTF-8, as the catalog sends it. Admin
+mutations, and submissions to internal-only events, require same-origin JSON requests. Public event URLs always show the
 form, even if the visitor is an authenticated employee.
 
 For a different catalog deployment, set both `AUTH_BASE_URL` and `AUTH_VERIFY_URL`

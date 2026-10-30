@@ -568,6 +568,42 @@ func normalizeSelections(options, values []string) ([]string, error) {
 	return canonical, nil
 }
 
+// WithParticipant answers the email question, and the name question when it is
+// still a short answer, with a signed-in participant's identity, replacing
+// anything they typed there. An empty name leaves their own answer.
+func (s Submission) WithParticipant(event Event, name, email string) Submission {
+	fillName := false
+	if name != "" {
+		for _, section := range event.EffectiveForm().Sections {
+			for _, field := range section.Fields {
+				if field.ID == "name" && field.Type == "short_text" {
+					fillName = true
+				}
+			}
+		}
+	}
+	s.Email = email
+	if fillName {
+		s.Name = name
+	}
+	if len(s.Answers) == 0 {
+		return s
+	}
+	answers := make([]Answer, 0, len(s.Answers)+2)
+	for _, answer := range s.Answers {
+		if answer.FieldID == "email" || fillName && answer.FieldID == "name" {
+			continue
+		}
+		answers = append(answers, answer)
+	}
+	answers = append(answers, Answer{FieldID: "email", Values: []string{email}})
+	if fillName {
+		answers = append(answers, Answer{FieldID: "name", Values: []string{name}})
+	}
+	s.Answers = answers
+	return s
+}
+
 // WithoutStaleAnswers drops answers to questions removed by a form edit, so a
 // participant who opened the form before the edit can still submit. Legacy
 // events without a schema keep their exact validation.

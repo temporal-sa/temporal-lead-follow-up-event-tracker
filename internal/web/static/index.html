@@ -57,6 +57,15 @@
       </section>
     </template>
 
+    <template id="internal-sign-in-template">
+      <section class="form-page">
+        <p class="eyebrow">Internal event</p>
+        <h1>Sign in to respond.</h1>
+        <p class="intro">This form is for Temporal employees. Sign in with your Temporal account and we'll bring you back here, with your name and email filled in.</p>
+        <a class="button internal-sign-in" id="internal-sign-in" href="/">Sign in with Temporal</a>
+      </section>
+    </template>
+
     <template id="participant-template">
       <section class="form-page">
         <p class="eyebrow">Let's stay in touch</p>
@@ -96,6 +105,8 @@
                 <div class="field settings-description"><label for="create-description">Welcome message <span class="optional">Optional</span></label><textarea id="create-description" name="description" rows="2" maxlength="1000" placeholder="A short welcome for participants"></textarea></div>
               </div>
               <p class="field-help" id="create-date-help">Submissions close at midnight UTC after this date. Responses remain available to view and export for as long as Temporal retains them.</p>
+              <label class="required-toggle internal-toggle"><input id="create-internal-only" name="internalOnly" type="checkbox" aria-describedby="create-internal-help"><span>Internal only</span></label>
+              <p class="field-help" id="create-internal-help">Attendees sign in with their Temporal account to respond, and their name and email come from that sign-in. This can't be changed after the event is created.</p>
               <div id="form-builder" class="form-builder"></div>
               <section class="qr-settings"><div><p class="eyebrow">SHARE THE CONVERSATION</p><h2>Your QR display</h2><p class="field-help">A full-screen Temporal display for a phone, tablet, or event booth. You can update this message after creating the event.</p></div><div class="field"><label for="create-qr-banner">Banner message <span class="optional">Optional</span></label><textarea id="create-qr-banner" name="qrBanner" rows="2" maxlength="500" placeholder="Scan to stay in touch with the Temporal team."></textarea></div><div class="qr-banner-preview"><span class="qr-preview-mark" aria-hidden="true">▦</span><div><span class="metric-label">QR display message</span><p id="create-banner-preview">Scan to keep the conversation going.</p></div></div></section>
               <section class="preview-settings"><div><p class="eyebrow">SHARE THE LINK</p><h2>Your link preview</h2><p class="field-help">What Slack and other apps show when someone posts the event link. Blank fields use the event name and welcome message.</p></div><div><div class="field"><label for="create-preview-title">Preview title <span class="optional">Optional</span></label><input id="create-preview-title" maxlength="120" placeholder="Defaults to the event name"></div><div class="field"><label for="create-preview-description">Preview description <span class="optional">Optional</span></label><textarea id="create-preview-description" rows="2" maxlength="300" placeholder="Defaults to the welcome message"></textarea></div></div></section>
@@ -119,6 +130,7 @@
         <div class="card event-summary">
           <div class="event-metrics"><div><span class="metric-label">Responses</span><strong class="metric-value" id="detail-count"></strong></div><div><span class="metric-label">Submissions close</span><strong class="metric-date" id="detail-closes"></strong></div></div>
           <p id="detail-lifecycle" class="field-help"></p>
+          <p id="detail-internal" class="field-help" hidden>Internal only: attendees sign in with their Temporal account, and their name and email come from that sign-in.</p>
           <div class="actions event-actions">
             <a class="button" id="detail-qr" target="_blank" rel="noopener" href="#">Display QR code <span class="visually-hidden">in a new tab</span><span aria-hidden="true">↗</span></a>
             <button class="button secondary" id="detail-copy" type="button">Copy form link</button>

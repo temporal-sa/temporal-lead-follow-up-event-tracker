@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -74,6 +75,61 @@ func TestListOmitsDeletedEvents(t *testing.T) {
 		t.Fatalf("directory: %#v %v", events, err)
 	}
 	c.AssertExpectations(t)
+}
+
+func TestListQueriesEventsConcurrentlyInPageOrder(t *testing.T) {
+	c := &mocks.Client{}
+	ids := []string{"first", "second", "third", "fourth"}
+	response := &workflowservice.ListWorkflowExecutionsResponse{}
+	// Every query waits until all of them have started, so one-at-a-time queries time out.
+	var started sync.WaitGroup
+	started.Add(len(ids))
+	for _, id := range ids {
+		response.Executions = append(response.Executions, &workflowpb.WorkflowExecutionInfo{Execution: &commonpb.WorkflowExecution{WorkflowId: tracker.EventID(id)}, Status: enums.WORKFLOW_EXECUTION_STATUS_RUNNING})
+		value := &mocks.Value{}
+		value.On("Get", mock.Anything).Run(func(args mock.Arguments) {
+			*args[0].(*tracker.Event) = tracker.Event{ID: id, Name: id}
+		}).Return(nil).Once()
+		c.On("QueryWorkflow", mock.Anything, tracker.EventID(id), "", "event").Run(func(mock.Arguments) {
+			started.Done()
+			all := make(chan struct{})
+			go func() { started.Wait(); close(all) }()
+			select {
+			case <-all:
+			case <-time.After(2 * time.Second):
+				t.Error("event queries ran one at a time")
+			}
+		}).Return(value, nil).Once()
+	}
+	c.On("ListWorkflow", mock.Anything, mock.Anything).Return(response, nil).Once()
+	events, _, err := NewTemporalGateway(c, "events", "default").List(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, event := range events {
+		got = append(got, event.ID)
+	}
+	if !reflect.DeepEqual(got, ids) {
+		t.Fatalf("events %v, want %v", got, ids)
+	}
+	c.AssertExpectations(t)
+}
+
+func TestListFailsWhenAnEventQueryFails(t *testing.T) {
+	c := &mocks.Client{}
+	response := &workflowservice.ListWorkflowExecutionsResponse{}
+	for _, id := range []string{"visible", "unavailable"} {
+		response.Executions = append(response.Executions, &workflowpb.WorkflowExecutionInfo{Execution: &commonpb.WorkflowExecution{WorkflowId: tracker.EventID(id)}, Status: enums.WORKFLOW_EXECUTION_STATUS_RUNNING})
+	}
+	queryReturns(c, "event/visible", tracker.Event{ID: "visible"})
+	unavailable := serviceerror.NewUnavailable("worker unavailable")
+	c.On("QueryWorkflow", mock.Anything, "event/unavailable", "", "event").Return(nil, unavailable).Once()
+	c.On("ListWorkflow", mock.Anything, mock.Anything).Return(response, nil).Once()
+	events, _, err := NewTemporalGateway(c, "events", "default").List(context.Background(), "")
+	if !errors.Is(err, unavailable) || events != nil {
+		t.Fatalf("events=%v err=%v", events, err)
+	}
 }
 
 type closedExecutionDeleter struct {

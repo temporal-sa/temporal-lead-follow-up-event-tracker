@@ -277,9 +277,13 @@ window.EventForms = (() => {
     return { value: () => { cleanupRoutes(); return clone(schema); }, validate };
   }
 
-  function mountParticipant(container, initial) {
+  // options.locked maps a field ID to an answer the participant can't change, such as
+  // the email from their sign-in. It applies to short-answer and email questions only.
+  function mountParticipant(container, initial, options = {}) {
     const schema = initial || defaultForm();
     const saved = new Map();
+    const lockedValue = (field) => ["short_text", "email"].includes(field.type) ? options.locked?.[field.id] : undefined;
+    fields(schema).forEach((field) => { if (lockedValue(field) !== undefined) saved.set(field.id, [lockedValue(field)]); });
     let path = [0];
     let position = 0;
     let submitting = false;
@@ -390,7 +394,11 @@ window.EventForms = (() => {
           if (field.type === "email") { input.inputMode = "email"; input.autocapitalize = "none"; input.spellcheck = false; }
         }
         input.id = prefix; input.name = field.id; input.required = Boolean(field.required); input.value = prior[0] || ""; label.htmlFor = input.id;
-        wire(input); wrap.append(input); read = () => input.value.trim() ? [input.value.trim()] : [];
+        wire(input); wrap.append(input);
+        if (lockedValue(field) !== undefined) {
+          input.value = lockedValue(field); input.readOnly = true;
+          wrap.append(node("p", "field-help", "From your Temporal sign-in."));
+        } read = () => input.value.trim() ? [input.value.trim()] : [];
         validate = () => input.setCustomValidity(field.required && !input.value.trim() ? "Please answer this question." : "");
       }
       controls.push({ field, read, validate }); questions.append(wrap);

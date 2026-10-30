@@ -47,6 +47,9 @@ type Event struct {
 	Aliases []string `json:"aliases,omitempty"`
 	// Preview is how the event's link unfurls in Slack and other apps; nil means defaults.
 	Preview *LinkPreview `json:"preview,omitempty"`
+	// InternalOnly events accept responses only from signed-in employees, whose
+	// name and email come from the catalog instead of the form. Set at creation.
+	InternalOnly bool `json:"internalOnly,omitempty"`
 }
 
 // LinkPreview is the title and description an event's link shows when it is
@@ -108,12 +111,13 @@ func (e Event) At(now time.Time) Event {
 }
 
 type CreateEvent struct {
-	Name        string       `json:"name"`
-	Description string       `json:"description"`
-	EndDate     string       `json:"endDate"`
-	Form        *Form        `json:"form,omitempty"`
-	QRBanner    string       `json:"qrBanner,omitempty"`
-	Preview     *LinkPreview `json:"preview,omitempty"`
+	Name         string       `json:"name"`
+	Description  string       `json:"description"`
+	EndDate      string       `json:"endDate"`
+	Form         *Form        `json:"form,omitempty"`
+	QRBanner     string       `json:"qrBanner,omitempty"`
+	Preview      *LinkPreview `json:"preview,omitempty"`
+	InternalOnly bool         `json:"internalOnly,omitempty"`
 }
 
 // EventDetails are the fields an employee sets at creation and can edit later.
@@ -175,7 +179,7 @@ func NewEvent(id, employee string, input CreateEvent, now time.Time) (Event, err
 			preview = &normalized
 		}
 	}
-	return Event{ID: id, Name: input.Name, Description: input.Description, EndDate: input.EndDate, CreatedBy: employee, CreatedAt: now.UTC(), ClosesAt: closes, CompletesAt: closes.AddDate(0, 0, 7), Shards: []string{}, Status: "open", Form: &form, QRBanner: banner, Preview: preview}, nil
+	return Event{ID: id, Name: input.Name, Description: input.Description, EndDate: input.EndDate, CreatedBy: employee, CreatedAt: now.UTC(), ClosesAt: closes, CompletesAt: closes.AddDate(0, 0, 7), Shards: []string{}, Status: "open", Form: &form, QRBanner: banner, Preview: preview, InternalOnly: input.InternalOnly}, nil
 }
 
 type Submission struct {

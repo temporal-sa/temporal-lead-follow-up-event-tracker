@@ -313,3 +313,50 @@ func TestSubmitLabelIsTrimmedAndBounded(t *testing.T) {
 		t.Fatal("accepted oversized submit button text")
 	}
 }
+
+func TestWithParticipantReplacesTypedIdentity(t *testing.T) {
+	const requestID = "01234567-89ab-cdef-0123-456789abcdef"
+	event, err := NewEvent("internal", "host@temporal.io", CreateEvent{Name: "Summit", EndDate: "2099-01-01", InternalOnly: true}, time.Now())
+	if err != nil || !event.InternalOnly {
+		t.Fatalf("event = %#v, %v", event, err)
+	}
+	typed := Submission{RequestID: requestID, Answers: []Answer{
+		{FieldID: "name", Values: []string{"Someone Else"}},
+		{FieldID: "role", Values: []string{"Engineer"}},
+		{FieldID: "email", Values: []string{"someone@example.com"}},
+	}}
+	got, err := typed.WithParticipant(event, "Zoë Müller", "zoe@temporal.io").WithoutStaleAnswers(event).NormalizeForEvent(event)
+	if err != nil || got.Name != "Zoë Müller" || got.Email != "zoe@temporal.io" || got.Role != "Engineer" {
+		t.Fatalf("submission = %#v, %v", got, err)
+	}
+
+	// Without a name from the catalog, the participant's own answer stays.
+	got, err = typed.WithParticipant(event, "", "zoe@temporal.io").WithoutStaleAnswers(event).NormalizeForEvent(event)
+	if err != nil || got.Name != "Someone Else" || got.Email != "zoe@temporal.io" {
+		t.Fatalf("submission without a name = %#v, %v", got, err)
+	}
+
+	// A legacy client that sends top-level fields gets the same identity.
+	legacy := Submission{Name: "Someone Else", Role: "Engineer", Email: "someone@example.com", RequestID: requestID}
+	got, err = legacy.WithParticipant(event, "Zoë Müller", "zoe@temporal.io").NormalizeForEvent(event)
+	if err != nil || got.Name != "Zoë Müller" || got.Email != "zoe@temporal.io" {
+		t.Fatalf("legacy submission = %#v, %v", got, err)
+	}
+
+	// A name question changed to a choice, or removed, is never answered with the catalog's name.
+	for _, fields := range [][]Field{
+		{{ID: "name", Label: "Team", Type: "dropdown", Options: []string{"Sales", "Eng"}, Required: true}, {ID: "email", Label: "Email", Type: "email", Required: true}},
+		{{ID: "email", Label: "Email", Type: "email", Required: true}},
+	} {
+		form := Form{Sections: []Section{{ID: "details", Fields: fields}}}
+		event.Form = &form
+		input := Submission{RequestID: requestID, Answers: []Answer{{FieldID: "email", Values: []string{"someone@example.com"}}}}
+		if fields[0].ID == "name" {
+			input.Answers = append(input.Answers, Answer{FieldID: "name", Values: []string{"Eng"}})
+		}
+		got, err = input.WithParticipant(event, "Zoë Müller", "zoe@temporal.io").WithoutStaleAnswers(event).NormalizeForEvent(event)
+		if err != nil || got.Email != "zoe@temporal.io" || got.Name == "Zoë Müller" {
+			t.Fatalf("form %v: submission = %#v, %v", fields, got, err)
+		}
+	}
+}
