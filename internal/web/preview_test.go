@@ -20,8 +20,8 @@ func TestEventLinksUnfurlWithTheEventPreview(t *testing.T) {
 			`<meta property="og:description" content="Say &#34;hi&#34; at booth 7">`,
 			`<meta name="description" content="Say &#34;hi&#34; at booth 7">`,
 			`<meta property="og:url" content="https://leads.tmprl-demo.cloud/renamed">`,
-			`<meta property="og:image" content="https://leads.tmprl-demo.cloud/static/link-preview.png">`,
-			`<meta name="twitter:image" content="https://leads.tmprl-demo.cloud/static/link-preview.png">`,
+			`<meta property="og:image" content="https://leads.tmprl-demo.cloud/static/link-preview.png?v=`,
+			`<meta name="twitter:image" content="https://leads.tmprl-demo.cloud/static/link-preview.png?v=`,
 			`<meta name="twitter:card" content="summary_large_image">`,
 			`<template id="participant-template">`,
 		} {
@@ -36,7 +36,7 @@ func TestEventLinksUnfurlWithTheEventPreview(t *testing.T) {
 }
 
 func TestLinkPreviewImageIsServed(t *testing.T) {
-	w := request(t, testHandler(t, &fakeGateway{}), "GET", "/static/link-preview.png", "", "", "")
+	w := request(t, testHandler(t, &fakeGateway{}), "GET", linkPreviewImage, "", "", "")
 	if w.Code != 200 || w.Header().Get("Content-Type") != "image/png" {
 		t.Fatalf("%d %s", w.Code, w.Header().Get("Content-Type"))
 	}

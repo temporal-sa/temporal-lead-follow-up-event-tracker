@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
@@ -175,6 +176,17 @@ type linkPreview struct {
 	Title, Description, URL, ImageURL string
 }
 
+// linkPreviewImage carries a content hash because Slack caches unfurl images
+// by URL; a changed image needs a new URL to show up.
+var linkPreviewImage = func() string {
+	image, err := assets.ReadFile("static/link-preview.png")
+	if err != nil {
+		panic(err)
+	}
+	sum := sha256.Sum256(image)
+	return "/static/link-preview.png?v=" + hex.EncodeToString(sum[:6])
+}()
+
 func (s *server) index(w http.ResponseWriter, r *http.Request) {
 	s.renderIndex(w, nil)
 }
@@ -208,7 +220,7 @@ func (s *server) attendeePage(w http.ResponseWriter, r *http.Request) {
 	preview := event.EffectivePreview()
 	s.renderIndex(w, &linkPreview{
 		Title: preview.Title, Description: preview.Description,
-		URL: s.config.PublicURL + "/" + event.Link(), ImageURL: s.config.PublicURL + "/static/link-preview.png",
+		URL: s.config.PublicURL + "/" + event.Link(), ImageURL: s.config.PublicURL + linkPreviewImage,
 	})
 }
 
