@@ -143,7 +143,7 @@
       errorPage(error.status === 404 ? "Event unavailable" : "Unable to load this event", error.status === 404 ? "Check the event link or ask the Temporal team for a new QR code." : failure(error), error.status !== 404);
       return;
     }
-    document.title = `${event.name} · Temporal follow-up`;
+    document.title = event.name;
     render("participant-template");
     setDescription("event-subheading", event.subheading);
     get("event-name").textContent = event.name;
@@ -208,7 +208,7 @@
   }
 
   async function dashboard() {
-    document.title = "Events · Temporal follow-up";
+    document.title = "Temporal Events";
     render("admin-template");
     showFlash();
     let cursor = "";
@@ -376,11 +376,11 @@
     const url = eventPath(id);
     if (requestedId !== id) history.replaceState(null, "", `/admin/events/${encodeURIComponent(id)}`);
     const link = () => event.slug || event.id;
-    document.title = `${event.name} · Temporal responses`;
+    document.title = event.name;
     render("detail-template");
     showFlash();
     const refreshSummary = () => {
-      document.title = `${event.name} · Temporal responses`;
+      document.title = event.name;
       get("detail-name").textContent = event.name;
       setDescription("detail-description", event.description);
       badge(get("detail-status"), event.status);
