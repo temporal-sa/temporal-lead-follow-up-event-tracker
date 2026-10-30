@@ -45,7 +45,7 @@
     app.replaceChildren();
     app.setAttribute("aria-busy", "false");
     const section = node("section", "error-page");
-    section.append(node("p", "eyebrow", "Event follow-up"), node("h1", "", title), node("p", "", message));
+    section.append(node("h1", "", title), node("p", "", message));
     if (retry) {
       const button = node("button", "button", "Try again");
       button.type = "button";
