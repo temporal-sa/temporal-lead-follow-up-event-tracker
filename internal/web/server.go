@@ -108,6 +108,8 @@ func newHandler(config Config, gateway Gateway, authTransport http.RoundTripper)
 	mux.HandleFunc("POST /api/admin/events/{id}/delete", s.admin(s.deleteEvent))
 	mux.HandleFunc("POST /api/admin/events/{id}/banner", s.admin(s.banner))
 	mux.HandleFunc("POST /api/admin/events/{id}/form", s.admin(s.form))
+	mux.HandleFunc("POST /api/admin/events/{id}/details", s.admin(s.details))
+	mux.HandleFunc("POST /api/admin/events/{id}/slug", s.admin(s.slug))
 	mux.HandleFunc("GET /api/admin/events/{id}/participants", s.admin(s.participants))
 	mux.HandleFunc("GET /api/admin/events/{id}/export.csv", s.admin(s.export))
 	mux.HandleFunc("GET /admin/events/{id}/qr", s.admin(s.qrPage))
@@ -255,7 +257,7 @@ func (s *server) submit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusGone, "This event is no longer accepting submissions.")
 		return
 	}
-	if err := s.gateway.Submit(r.Context(), id, input); err != nil {
+	if err := s.gateway.Submit(r.Context(), event.ID, input); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -353,7 +355,7 @@ func (s *server) endEvent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, existing)
 		return
 	}
-	event, err := s.gateway.End(r.Context(), id)
+	event, err := s.gateway.End(r.Context(), existing.ID)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -404,7 +406,7 @@ func (s *server) banner(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusGone, "This event has completed; its QR banner cannot be changed.")
 		return
 	}
-	event, err := s.gateway.Banner(r.Context(), id, body.Banner)
+	event, err := s.gateway.Banner(r.Context(), existing.ID, body.Banner)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -438,7 +440,73 @@ func (s *server) form(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusGone, "This event has completed; its questions cannot be changed.")
 		return
 	}
-	event, err := s.gateway.Form(r.Context(), id, form)
+	event, err := s.gateway.Form(r.Context(), existing.ID, form)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, event)
+}
+
+func (s *server) details(w http.ResponseWriter, r *http.Request) {
+	id, err := eventID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var body tracker.EventDetails
+	if !s.decode(w, r, &body, true) {
+		return
+	}
+	details, _, err := body.Normalize()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	existing, err := s.visibleEvent(r.Context(), id)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if existing.Status == "archived" {
+		writeError(w, http.StatusGone, "This event has completed; its details cannot be changed.")
+		return
+	}
+	event, err := s.gateway.Details(r.Context(), existing.ID, details)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, event)
+}
+
+func (s *server) slug(w http.ResponseWriter, r *http.Request) {
+	id, err := eventID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var body struct {
+		Slug string `json:"slug"`
+	}
+	if !s.decode(w, r, &body, true) {
+		return
+	}
+	slug, err := tracker.NormalizeSlug(body.Slug)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	existing, err := s.visibleEvent(r.Context(), id)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if existing.Status == "archived" {
+		writeError(w, http.StatusGone, "This event has completed; its link cannot be changed.")
+		return
+	}
+	event, err := s.gateway.Slug(r.Context(), existing.ID, slug)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -498,7 +566,7 @@ func (s *server) qrImage(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	data, err := qrcode.EncodePNG(s.config.PublicURL+"/"+event.ID, 1024)
+	data, err := qrcode.EncodePNG(s.config.PublicURL+"/"+event.Link(), 1024)
 	if err != nil {
 		handleError(w, err)
 		return

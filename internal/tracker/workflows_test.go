@@ -553,3 +553,276 @@ func TestFormUpdateReplacesQuestionsAndSurvivesContinueAsNew(t *testing.T) {
 		t.Fatalf("edited form lost: %+v", state.Event)
 	}
 }
+
+func TestDetailsUpdateReschedulesCompletion(t *testing.T) {
+	for _, tc := range []struct {
+		name, endDate string
+		closes        time.Time
+	}{
+		{"extend", "2026-10-10", time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)},
+		{"shorten", "2026-10-06", time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			suite := testsuite.WorkflowTestSuite{}
+			env := suite.NewTestWorkflowEnvironment()
+			event := testEvent()
+			event.Shards = []string{"original"}
+			env.SetStartTime(event.ClosesAt.Add(-48 * time.Hour))
+			var timers []time.Duration
+			env.SetOnTimerScheduledListener(func(_ string, duration time.Duration) { timers = append(timers, duration) })
+			env.OnSignalExternalWorkflow(mock.Anything, "original", "", "finish", mock.Anything).Return(nil).Once()
+			saved := false
+			env.RegisterDelayedCallback(func() {
+				env.UpdateWorkflow("details", "details", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					e := value.(Event)
+					if e.EndDate != tc.endDate || !e.ClosesAt.Equal(tc.closes) || !e.CompletesAt.Equal(tc.closes.AddDate(0, 0, 7)) || e.Status != "open" || e.Revision != 1 {
+						t.Errorf("details=%+v", e)
+					}
+					saved = true
+				}}, EventDetails{Name: "Test", EndDate: tc.endDate})
+			}, time.Hour)
+			// Past the old close time, an extended event still takes submissions.
+			checked := tc.name != "extend"
+			if !checked {
+				env.RegisterDelayedCallback(func() {
+					value, err := env.QueryWorkflow("event")
+					if err != nil {
+						t.Fatal(err)
+					}
+					var e Event
+					_ = value.Get(&e)
+					if e.Status != "open" {
+						t.Errorf("extended event status=%s", e.Status)
+					}
+					checked = true
+				}, 49*time.Hour)
+			}
+			env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
+			if err := env.GetWorkflowError(); err != nil {
+				t.Fatal(err)
+			}
+			if !saved || !checked {
+				t.Fatalf("saved=%t checked=%t", saved, checked)
+			}
+			if want := tc.closes.AddDate(0, 0, 7); !env.Now().Equal(want) {
+				t.Fatalf("completed at %v, want %v", env.Now(), want)
+			}
+			if len(timers) != 2 {
+				t.Fatalf("timers=%v", timers)
+			}
+			env.AssertExpectations(t)
+		})
+	}
+}
+
+func TestDetailsUpdateChangesTextWithoutANewTimer(t *testing.T) {
+	suite := testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+	event := testEvent()
+	event.Description = "Old welcome"
+	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
+	var timers []time.Duration
+	env.SetOnTimerScheduledListener(func(_ string, duration time.Duration) { timers = append(timers, duration) })
+	revisions := []int64{}
+	env.RegisterDelayedCallback(func() {
+		for _, details := range []EventDetails{
+			{Name: "  Renamed  ", Description: "  New welcome  ", EndDate: event.EndDate},
+			{Name: "Renamed", Description: "New welcome", EndDate: event.EndDate},
+		} {
+			env.UpdateWorkflow("details", "", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				e := value.(Event)
+				if e.Name != "Renamed" || e.Description != "New welcome" || !e.CompletesAt.Equal(event.CompletesAt) {
+					t.Errorf("details=%+v", e)
+				}
+				revisions = append(revisions, e.Revision)
+			}}, details)
+		}
+	}, time.Second)
+	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(revisions, []int64{1, 1}) {
+		t.Fatalf("an unchanged save should not bump the revision: %v", revisions)
+	}
+	if len(timers) != 1 || !env.Now().Equal(event.CompletesAt) {
+		t.Fatalf("timers=%v completed=%v", timers, env.Now())
+	}
+}
+
+func TestDetailsUpdateRejectsInvalidAndClosedChanges(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		setup   string // "", "end", or "delete"
+		details EventDetails
+		want    string // ApplicationError type, or "" for success
+	}{
+		{"past end date", "", EventDetails{Name: "Test", EndDate: "2026-10-01"}, "Invalid"},
+		{"blank name", "", EventDetails{Name: "  ", EndDate: "2026-10-07"}, "Invalid"},
+		{"bad date", "", EventDetails{Name: "Test", EndDate: "10/07/2026"}, "Invalid"},
+		{"new date after end", "end", EventDetails{Name: "Test", EndDate: "2026-10-09"}, "Closed"},
+		{"rename after end", "end", EventDetails{Name: "Renamed", EndDate: "2026-10-07"}, ""},
+		{"rename after delete", "delete", EventDetails{Name: "Renamed", EndDate: "2026-10-07"}, "Closed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			suite := testsuite.WorkflowTestSuite{}
+			env := suite.NewTestWorkflowEnvironment()
+			event := testEvent()
+			env.SetStartTime(event.ClosesAt.Add(-24 * time.Hour))
+			if tc.setup != "" {
+				env.RegisterDelayedCallback(func() {
+					env.UpdateWorkflow(tc.setup, tc.setup, &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
+						if err != nil {
+							t.Error(err)
+						}
+					}})
+				}, time.Second)
+			}
+			checked := false
+			check := func(err error) {
+				var app *temporal.ApplicationError
+				if tc.want == "" && err != nil || tc.want != "" && (!errors.As(err, &app) || app.Type() != tc.want) {
+					t.Errorf("error=%v, want %q", err, tc.want)
+				}
+				checked = true
+			}
+			env.RegisterDelayedCallback(func() {
+				env.UpdateWorkflow("details", "details", &testsuite.TestUpdateCallback{OnReject: check, OnComplete: func(_ any, err error) { check(err) }}, tc.details)
+			}, 2*time.Second)
+			env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
+			if err := env.GetWorkflowError(); err != nil {
+				t.Fatal(err)
+			}
+			var result Event
+			_ = env.GetWorkflowResult(&result)
+			if !checked || !result.CompletesAt.Equal(event.CompletesAt) {
+				t.Fatalf("checked=%t result=%+v", checked, result)
+			}
+		})
+	}
+}
+
+func TestDetailsUpdateSurvivesContinueAsNew(t *testing.T) {
+	suite := testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+	event := testEvent()
+	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
+	env.RegisterDelayedCallback(func() {
+		env.UpdateWorkflow("details", "details", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
+			if err != nil {
+				t.Error(err)
+			}
+			env.SetContinueAsNewSuggested(true)
+		}}, EventDetails{Name: "Renamed", Description: "Hi", EndDate: "2026-10-12"})
+	}, time.Second)
+	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
+	var continuation *workflow.ContinueAsNewError
+	if !errors.As(env.GetWorkflowError(), &continuation) {
+		t.Fatal(env.GetWorkflowError())
+	}
+	var state EventState
+	if err := converter.GetDefaultDataConverter().FromPayloads(continuation.Input, &state); err != nil {
+		t.Fatal(err)
+	}
+	e := state.Event
+	if e.Name != "Renamed" || e.Description != "Hi" || e.EndDate != "2026-10-12" || !e.CompletesAt.Equal(time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("details lost: %+v", e)
+	}
+}
+
+func TestSlugUpdateReservesAliasesAndFinishesThem(t *testing.T) {
+	suite := testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+	event := testEvent()
+	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
+	// The real alias runs as a child; the test environment fails completion if the
+	// finish signal cannot reach a running alias.
+	env.RegisterWorkflow(EventAliasWorkflow)
+	var started []string
+	env.SetOnChildWorkflowStartedListener(func(info *workflow.Info, _ workflow.Context, args converter.EncodedValues) {
+		var state AliasState
+		if err := args.Get(&state); err != nil || state.EventID != "test" {
+			t.Errorf("alias state=%+v err=%v", state, err)
+		}
+		started = append(started, info.WorkflowExecution.ID)
+	})
+	var results []Event
+	update := func(slug string, wantErr bool) {
+		env.UpdateWorkflow("slug", "", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
+			if (err != nil) != wantErr {
+				t.Errorf("slug %q error=%v", slug, err)
+			}
+			if err == nil {
+				results = append(results, value.(Event))
+			}
+		}}, slug)
+	}
+	env.RegisterDelayedCallback(func() {
+		update("Renamed!", false) // reserves "renamed"
+		update("renamed", false)  // already current
+		update("test", false)     // back to the original, no new alias
+		update("renamed", false)  // an alias it already holds
+		update("admin", true)     // reserved path
+	}, time.Second)
+	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	links := []string{}
+	for _, e := range results {
+		links = append(links, e.Link())
+	}
+	if !reflect.DeepEqual(links, []string{"renamed", "renamed", "test", "renamed"}) || !reflect.DeepEqual(started, []string{"event/renamed"}) {
+		t.Fatalf("links=%v started=%v", links, started)
+	}
+	var result Event
+	_ = env.GetWorkflowResult(&result)
+	if !reflect.DeepEqual(result.Aliases, []string{"renamed"}) || result.Revision != 3 {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestSlugUpdateStopsAtMaxAliases(t *testing.T) {
+	suite := testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+	event := testEvent()
+	for i := range MaxAliases {
+		event.Aliases = append(event.Aliases, fmt.Sprintf("alias-%d", i))
+	}
+	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
+	env.RegisterWorkflow(EventAliasWorkflow)
+	env.OnSignalExternalWorkflow(mock.Anything, mock.Anything, "", "finish", mock.Anything).Return(nil).Times(MaxAliases)
+	checked := false
+	env.RegisterDelayedCallback(func() {
+		env.UpdateWorkflow("slug", "", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
+			var app *temporal.ApplicationError
+			if !errors.As(err, &app) || app.Type() != "Invalid" {
+				t.Errorf("error=%v", err)
+			}
+			checked = true
+		}}, "one-too-many")
+		env.UpdateWorkflow("slug", "", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
+			if err != nil {
+				t.Errorf("switching to a held alias failed: %v", err)
+			}
+		}}, "alias-3")
+	}, time.Second)
+	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	var result Event
+	_ = env.GetWorkflowResult(&result)
+	if !checked || len(result.Aliases) != MaxAliases || result.Link() != "alias-3" {
+		t.Fatalf("result=%+v", result)
+	}
+	env.AssertExpectations(t)
+}

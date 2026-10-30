@@ -1,6 +1,9 @@
 package tracker
 
 import (
+	"errors"
+	"fmt"
+	"slices"
 	"time"
 
 	enums "go.temporal.io/api/enums/v1"
@@ -9,7 +12,7 @@ import (
 )
 
 func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
-	rotating, retiring := false, false
+	rotating, retiring, rescheduled := false, false, false
 	mutex := workflow.NewMutex(ctx)
 	activityCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 30 * time.Second,
@@ -192,6 +195,86 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 		return Event{}, err
 	}
 	// Registering an additional handler emits no commands and preserves existing histories.
+	// The end date can only move while submissions are open, so an ended event never reopens.
+	if err := workflow.SetUpdateHandlerWithOptions(ctx, "details", func(ctx workflow.Context, input EventDetails) (Event, error) {
+		details, closes, err := input.Normalize()
+		if err != nil {
+			return Event{}, temporal.NewApplicationError(err.Error(), "Invalid")
+		}
+		if err := mutex.Lock(ctx); err != nil {
+			return Event{}, err
+		}
+		defer mutex.Unlock()
+		if state.Event.DeletedAt != nil {
+			return Event{}, temporal.NewApplicationError("this event is no longer available", "Closed")
+		}
+		now := workflow.Now(ctx)
+		changed := false
+		if details.EndDate != state.Event.EndDate {
+			if state.Event.At(now).Status != "open" {
+				return Event{}, temporal.NewApplicationError("submissions have closed, so the end date can no longer change", "Closed")
+			}
+			if !closes.After(now) {
+				return Event{}, temporal.NewApplicationError(errEndDatePassed.Error(), "Invalid")
+			}
+			state.Event.EndDate, state.Event.ClosesAt, state.Event.CompletesAt = details.EndDate, closes, closes.AddDate(0, 0, 7)
+			rescheduled = true
+			changed = true
+		}
+		if details.Name != state.Event.Name || details.Description != state.Event.Description {
+			state.Event.Name, state.Event.Description = details.Name, details.Description
+			changed = true
+		}
+		if changed {
+			state.Event.Revision++
+		}
+		return state.Event.At(now), nil
+	}, workflow.UpdateHandlerOptions{Validator: func(EventDetails) error { return accepting() }}); err != nil {
+		return Event{}, err
+	}
+	// Registering an additional handler emits no commands and preserves existing histories.
+	// A new slug is reserved by starting an alias workflow with that slug's event ID, so
+	// event creation's duplicate check treats it like any other taken slug.
+	if err := workflow.SetUpdateHandlerWithOptions(ctx, "slug", func(ctx workflow.Context, input string) (Event, error) {
+		slug, err := NormalizeSlug(input)
+		if err != nil {
+			return Event{}, temporal.NewApplicationError(err.Error(), "Invalid")
+		}
+		if err := mutex.Lock(ctx); err != nil {
+			return Event{}, err
+		}
+		defer mutex.Unlock()
+		if state.Event.DeletedAt != nil {
+			return Event{}, temporal.NewApplicationError("this event is no longer available", "Closed")
+		}
+		if slug == state.Event.Link() {
+			return state.Event.At(workflow.Now(ctx)), nil
+		}
+		if slug != state.Event.ID && !slices.Contains(state.Event.Aliases, slug) {
+			if len(state.Event.Aliases) >= MaxAliases {
+				return Event{}, temporal.NewApplicationError(fmt.Sprintf("an event can have at most %d additional links", MaxAliases), "Invalid")
+			}
+			childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+				WorkflowID: EventID(slug), ParentClosePolicy: enums.PARENT_CLOSE_POLICY_ABANDON,
+				WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
+			})
+			child := workflow.ExecuteChildWorkflow(childCtx, EventAliasWorkflow, AliasState{EventID: state.Event.ID})
+			if err := child.GetChildWorkflowExecution().Get(ctx, nil); err != nil {
+				var taken *temporal.ChildWorkflowExecutionAlreadyStartedError
+				if errors.As(err, &taken) {
+					return Event{}, temporal.NewApplicationError("that event link is already in use", "Invalid")
+				}
+				return Event{}, err
+			}
+			state.Event.Aliases = append(state.Event.Aliases, slug)
+		}
+		state.Event.Slug = slug
+		state.Event.Revision++
+		return state.Event.At(workflow.Now(ctx)), nil
+	}, workflow.UpdateHandlerOptions{Validator: func(string) error { return accepting() }}); err != nil {
+		return Event{}, err
+	}
+	// Registering an additional handler emits no commands and preserves existing histories.
 	if err := workflow.SetUpdateHandlerWithOptions(ctx, "delete", func(ctx workflow.Context) (Event, error) {
 		if err := mutex.Lock(ctx); err != nil {
 			return Event{}, err
@@ -207,15 +290,24 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 		return Event{}, err
 	}
 	// Completion starts Temporal retention; queries and exports remain available.
-	remaining := state.Event.CompletesAt.Sub(workflow.Now(ctx))
-	if remaining > 0 {
-		refresh, err := workflow.AwaitWithTimeout(ctx, remaining, func() bool {
-			return workflow.GetInfo(ctx).GetContinueAsNewSuggested()
+	// A run whose end date never changes starts exactly one completion timer, as
+	// before rescheduling existed, so recorded histories replay unchanged.
+	for {
+		remaining := state.Event.CompletesAt.Sub(workflow.Now(ctx))
+		if remaining <= 0 {
+			break
+		}
+		rescheduled = false
+		woke, err := workflow.AwaitWithTimeout(ctx, remaining, func() bool {
+			return rescheduled || workflow.GetInfo(ctx).GetContinueAsNewSuggested()
 		})
 		if err != nil {
 			return Event{}, err
 		}
-		if refresh {
+		if !woke {
+			break
+		}
+		if workflow.GetInfo(ctx).GetContinueAsNewSuggested() {
 			rotating = true
 			if err := workflow.Await(ctx, func() bool { return workflow.AllHandlersFinished(ctx) }); err != nil {
 				return Event{}, err
@@ -232,7 +324,27 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 			return Event{}, err
 		}
 	}
+	// Aliases complete with the event, so every slug leaves retention together.
+	for _, slug := range state.Event.Aliases {
+		if err := workflow.SignalExternalWorkflow(ctx, EventID(slug), "", "finish", nil).Get(ctx, nil); err != nil {
+			return Event{}, err
+		}
+	}
 	return state.Event.At(workflow.Now(ctx)), nil
+}
+
+type AliasState struct {
+	EventID string `json:"eventId"`
+}
+
+// EventAliasWorkflow reserves an extra slug for an event. It answers the event
+// query with only its event's ID; LoadEvent follows that to the event itself.
+func EventAliasWorkflow(ctx workflow.Context, state AliasState) error {
+	if err := workflow.SetQueryHandler(ctx, "event", func() (Event, error) { return Event{ID: state.EventID}, nil }); err != nil {
+		return err
+	}
+	workflow.GetSignalChannel(ctx, "finish").Receive(ctx, nil)
+	return nil
 }
 
 func ParticipantShardWorkflow(ctx workflow.Context, state ShardState) (int, error) {

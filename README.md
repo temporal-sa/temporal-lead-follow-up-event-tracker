@@ -77,6 +77,23 @@ completion deadline. Events cannot reopen. New workflow runs use a single timer
 for completion; submission updates enforce the cutoff when they arrive, and the
 API derives the displayed status from the current time.
 
+Edit the name, welcome message, and end date under **Event details** on the event
+page. The name and welcome message can change until the event completes. The end
+date can only change while submissions are open; moving it moves the close time
+and the seven-day completion with it, earlier or later. Once an event has ended,
+by date or with **End event**, its end date is fixed. To run it again, use
+**Duplicate event**, which opens the create form with the name, welcome message,
+questions, and QR banner filled in and the end date left blank.
+
+Change an event's link under **Event link**. The new slug follows the same rules as
+creation. Every earlier link, including the original, keeps opening the same event,
+so printed QR codes and open browser tabs keep working; new QR codes use the
+current link. An event can hold up to 10 links besides its original. Each extra
+link is reserved by an `EventAliasWorkflow` with the Workflow ID `event/{slug}`, so
+no other event can take it, and it completes with its event. All of an event's
+links are released together when Temporal retention removes them. Renaming an
+event does not change its link.
+
 New events start with a form template containing name, title / role, email, and
 an optional follow-up reason. Customize the questions when creating an event:
 edit labels and help text, add or remove questions, reorder them, and mark them
@@ -139,6 +156,15 @@ The coordinator carries receipts for the most recent 1,024 accepted submissions
 across Continue-As-New, so a retried older HTTP request in that window cannot
 replace newer details. Beyond that window a replayed request is treated as a new
 submission; the email still deduplicates to one participant.
+
+Changing the end date wakes the completion wait, which starts a new timer for the
+new completion time. A run whose end date never changes starts one timer, exactly
+as before, so existing histories replay unchanged. `EventWorkflow` starts each
+`EventAliasWorkflow` as an `ABANDON` child inside the `slug` Update, with
+`REJECT_DUPLICATE`, so the reservation and the event's record of it are one step.
+An alias answers the `event` Query with only its event's ID, and every lookup
+follows it once to the event. Submissions and edits made through any link are sent
+to the event's own Workflow.
 
 Both workflow types Continue-As-New when Temporal suggests it (at about 4 MB or
 4K events of history, or 90% of the Update limit). The coordinator's history
@@ -225,7 +251,9 @@ SSO requires the deployed hostname to be under `.tmprl-demo.cloud`. Completed
 workflow queries require a compatible worker, even during retention. Keep changes
 replay-compatible with existing histories, and check them with the recorded-history
 replay tests.
-The optional `TEMPORAL_REPLAY_HISTORY` test can replay a downloaded history file.
+The optional `TEMPORAL_REPLAY_HISTORY` test replays downloaded history files; list
+several separated by `:`, for example
+`TEMPORAL_REPLAY_HISTORY=$(ls ~/Downloads/*_events.json | paste -sd: -) go test ./internal/tracker -run TestReplay -v`.
 Previously pinned workflows still require their original worker deployment;
 changing the task queue does not migrate those executions.
 

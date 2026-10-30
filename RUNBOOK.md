@@ -67,6 +67,14 @@ The QR code encodes the app's public URL, which locally is `http://localhost:808
 
 Skip this beat when time is short.
 
+Optionally, change the event too:
+
+1. Under **EVENT DETAILS**, change the name, the welcome message, or the last day, and click **Save details**. A changed date shows "Details saved. Submissions now close …".
+2. Under **EVENT LINK**, type a new link and click **Save link**. The page says "Link saved: …" and lists the earlier link as still working.
+3. Open the old link and the new one. Both show the attendee form with the new name.
+4. Say: "The old link is still reserved by a small Workflow that points at this event, so printed QR codes keep working, and no other event can take it."
+5. For proof, `event/<new-link>` is a running `EventAliasWorkflow`, and the event's history shows `details` and `slug` Updates.
+
 ### 5. Export the responses
 
 1. Click **Export CSV ↓**. The page says "Your CSV export is ready." and the browser downloads `<event-name>-leads.csv`.
@@ -341,7 +349,7 @@ When someone asks what they'd change for their own system, these are the parts t
 - **Between runs:** on the event page, click **Delete event**, then **Delete event** in the dialog. The event disappears from **Your events**, and its form and QR code stop opening. A running event Workflow records the deletion and keeps running until its completion time, seven days after its last day, so on tmprl-demo.cloud give test events today's date as the last day.
 - **To start locally from nothing:** stop `make preview`, delete `.local/preview/`, and start it again. That removes the dev server's data, including every event.
 - **To stop locally:** press `Ctrl+C` in the `make preview` terminal. It stops the app and the dev server it started; the data stays in `.local/preview/`.
-- **What keeps running:** each event Workflow and its shards wait until seven days after the last day, then complete on their own. While they wait, nothing runs and nothing needs stopping.
+- **What keeps running:** each event Workflow, its shards, and the alias Workflows for any extra links wait until seven days after the last day, then complete on their own. While they wait, nothing runs and nothing needs stopping.
 
 ## When something goes wrong
 
@@ -354,6 +362,9 @@ When someone asks what they'd change for their own system, these are the parts t
 | "Temporal is temporarily unavailable. Please retry." on the form or control panel | The Worker isn't running, so the event Workflow can't answer Queries or Updates | Start the Worker (it's part of `make preview` and `make dev`); the attendee can submit again with the same details |
 | A new event isn't in **Your events** yet | Visibility is eventually consistent | Wait a moment and reload, or use the event's direct link |
 | "Event is refreshing. Please retry shortly." | The event Workflow is about to Continue-As-New | Submit again |
+| "submissions have closed, so the end date can no longer change" | The event ended, by date or with **End event** | Click **Duplicate event** and pick a new last day |
+| "that event link is already in use" | Another event, or one still in retention, has that link | Pick a different link |
+| "an event can have at most 10 additional links" | The event has used all 10 extra links | Switch back to one of the links listed under **EVENT LINK** |
 | Export fails with "participants changed; reload the list or retry the export" | Submissions kept arriving during three export attempts | Click **Export CSV ↓** again |
 
 ## Keeping this runbook current

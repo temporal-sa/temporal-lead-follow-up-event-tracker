@@ -3,6 +3,8 @@ package web
 import (
 	"context"
 	"encoding/base64"
+	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -10,6 +12,7 @@ import (
 	"github.com/temporal-sa/temporal-lead-follow-up-event-tracker/internal/tracker"
 	commonpb "go.temporal.io/api/common/v1"
 	enums "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
 	workflowpb "go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
@@ -75,16 +78,31 @@ func TestListOmitsDeletedEvents(t *testing.T) {
 
 type closedExecutionDeleter struct {
 	workflowservice.WorkflowServiceClient
-	request *workflowservice.DeleteWorkflowExecutionRequest
+	request  *workflowservice.DeleteWorkflowExecutionRequest
+	requests []string
+	missing  map[string]bool
 }
 
 func (d *closedExecutionDeleter) DeleteWorkflowExecution(_ context.Context, in *workflowservice.DeleteWorkflowExecutionRequest, _ ...grpc.CallOption) (*workflowservice.DeleteWorkflowExecutionResponse, error) {
 	d.request = in
+	id := in.GetWorkflowExecution().GetWorkflowId()
+	d.requests = append(d.requests, id)
+	if d.missing[id] {
+		return nil, serviceerror.NewNotFound("already deleted")
+	}
 	return &workflowservice.DeleteWorkflowExecutionResponse{}, nil
+}
+
+// queryReturns makes the event query on workflowID answer with event.
+func queryReturns(c *mocks.Client, workflowID string, event tracker.Event) {
+	value := &mocks.Value{}
+	value.On("Get", mock.Anything).Run(func(args mock.Arguments) { *args[0].(*tracker.Event) = event }).Return(nil).Once()
+	c.On("QueryWorkflow", mock.Anything, workflowID, "", "event").Return(value, nil).Once()
 }
 
 func TestDeleteRunningEventRecordsTheUpdate(t *testing.T) {
 	c := &mocks.Client{}
+	queryReturns(c, "event/test", tracker.Event{ID: "test"})
 	c.On("DescribeWorkflowExecution", mock.Anything, "event/test", "").Return(&workflowservice.DescribeWorkflowExecutionResponse{
 		WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Status: enums.WORKFLOW_EXECUTION_STATUS_RUNNING},
 	}, nil).Once()
@@ -104,6 +122,7 @@ func TestDeleteRunningEventRecordsTheUpdate(t *testing.T) {
 
 func TestDeleteClosedEventRemovesTheExecution(t *testing.T) {
 	c := &mocks.Client{}
+	queryReturns(c, "event/test", tracker.Event{ID: "test"})
 	c.On("DescribeWorkflowExecution", mock.Anything, "event/test", "").Return(&workflowservice.DescribeWorkflowExecutionResponse{
 		WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Status: enums.WORKFLOW_EXECUTION_STATUS_COMPLETED},
 	}, nil).Once()
@@ -114,6 +133,65 @@ func TestDeleteClosedEventRemovesTheExecution(t *testing.T) {
 	}
 	if deleter.request == nil || deleter.request.Namespace != "leads" || deleter.request.GetWorkflowExecution().GetWorkflowId() != "event/test" {
 		t.Fatalf("delete request = %#v", deleter.request)
+	}
+	c.AssertExpectations(t)
+}
+
+func TestDeleteThroughAliasRecordsTheUpdateOnTheEvent(t *testing.T) {
+	c := &mocks.Client{}
+	queryReturns(c, "event/renamed", tracker.Event{ID: "test"})
+	queryReturns(c, "event/test", tracker.Event{ID: "test", Slug: "renamed", Aliases: []string{"renamed"}})
+	c.On("DescribeWorkflowExecution", mock.Anything, "event/test", "").Return(&workflowservice.DescribeWorkflowExecutionResponse{
+		WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Status: enums.WORKFLOW_EXECUTION_STATUS_RUNNING},
+	}, nil).Once()
+	handle := &mocks.WorkflowUpdateHandle{}
+	handle.On("Get", mock.Anything, mock.Anything).Return(nil).Once()
+	c.On("UpdateWorkflow", mock.Anything, mock.MatchedBy(func(input client.UpdateWorkflowOptions) bool {
+		return input.WorkflowID == "event/test" && input.UpdateName == "delete"
+	})).Return(handle, nil).Once()
+	if err := NewTemporalGateway(c, "events", "default").Delete(context.Background(), "renamed"); err != nil {
+		t.Fatal(err)
+	}
+	c.AssertExpectations(t)
+}
+
+func TestDeleteClosedEventAlsoRemovesItsAliases(t *testing.T) {
+	c := &mocks.Client{}
+	now := time.Now()
+	// Deleting twice is not an error, and an alias already removed by a failed attempt is skipped.
+	queryReturns(c, "event/test", tracker.Event{ID: "test", Aliases: []string{"first", "second"}, DeletedAt: &now})
+	c.On("DescribeWorkflowExecution", mock.Anything, "event/test", "").Return(&workflowservice.DescribeWorkflowExecutionResponse{
+		WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Status: enums.WORKFLOW_EXECUTION_STATUS_COMPLETED},
+	}, nil).Once()
+	deleter := &closedExecutionDeleter{missing: map[string]bool{"event/first": true}}
+	c.On("WorkflowService").Return(deleter).Times(3)
+	if err := NewTemporalGateway(c, "events", "leads").Delete(context.Background(), "test"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"event/first", "event/second", "event/test"}; !reflect.DeepEqual(deleter.requests, want) {
+		t.Fatalf("deleted %v, want %v", deleter.requests, want)
+	}
+	c.AssertExpectations(t)
+}
+
+func TestEventFollowsAnAliasOnce(t *testing.T) {
+	c := &mocks.Client{}
+	queryReturns(c, "event/renamed", tracker.Event{ID: "test"})
+	queryReturns(c, "event/test", tracker.Event{ID: "test", Name: "Conference", Slug: "renamed", ClosesAt: time.Now().Add(time.Hour), CompletesAt: time.Now().Add(2 * time.Hour)})
+	event, err := NewTemporalGateway(c, "events", "default").Event(context.Background(), "renamed")
+	if err != nil || event.ID != "test" || event.Name != "Conference" || event.Status != "open" {
+		t.Fatalf("event=%+v err=%v", event, err)
+	}
+	c.AssertExpectations(t)
+
+	// An alias whose event slug now belongs to another alias must not show that other event.
+	c = &mocks.Client{}
+	queryReturns(c, "event/stale", tracker.Event{ID: "gone"})
+	queryReturns(c, "event/gone", tracker.Event{ID: "someone-else"})
+	_, err = NewTemporalGateway(c, "events", "default").Event(context.Background(), "stale")
+	var missing *serviceerror.NotFound
+	if !errors.As(err, &missing) {
+		t.Fatalf("stale alias error=%v", err)
 	}
 	c.AssertExpectations(t)
 }

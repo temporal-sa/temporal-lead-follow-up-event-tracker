@@ -14,13 +14,13 @@ import (
 )
 
 const (
-	EventType         = "EventWorkflow"
-	ShardType         = "ParticipantShardWorkflow"
-	DefaultTaskQueue  = "event-leads"
-	MaxParticipants   = 5000
-	MaxShardBytes     = 1024 * 1024
-	RecentRequests    = 1024
-	PageSize          = 100
+	EventType        = "EventWorkflow"
+	ShardType        = "ParticipantShardWorkflow"
+	DefaultTaskQueue = "event-leads"
+	MaxParticipants  = 5000
+	MaxShardBytes    = 1024 * 1024
+	RecentRequests   = 1024
+	PageSize         = 100
 )
 
 type Event struct {
@@ -41,6 +41,18 @@ type Event struct {
 	Shards      []string   `json:"shards"`
 	Form        *Form      `json:"form,omitempty"`
 	QRBanner    string     `json:"qrBanner,omitempty"`
+	// Slug is the link the event shares now; empty means its ID. The ID and every
+	// alias keep routing to the event for as long as it is retained.
+	Slug    string   `json:"slug,omitempty"`
+	Aliases []string `json:"aliases,omitempty"`
+}
+
+// Link is the slug for the event's public URL and QR code.
+func (e Event) Link() string {
+	if e.Slug == "" {
+		return e.ID
+	}
+	return e.Slug
 }
 
 func (e Event) At(now time.Time) Event {
@@ -62,23 +74,43 @@ type CreateEvent struct {
 	QRBanner    string `json:"qrBanner,omitempty"`
 }
 
-func NewEvent(id, employee string, input CreateEvent, now time.Time) (Event, error) {
-	input.Name = strings.TrimSpace(input.Name)
-	input.Description = strings.TrimSpace(input.Description)
-	if input.Name == "" || utf8.RuneCountInString(input.Name) > 120 {
-		return Event{}, errors.New("event name must contain 1–120 characters")
+// EventDetails are the fields an employee sets at creation and can edit later.
+type EventDetails struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	EndDate     string `json:"endDate"`
+}
+
+// Normalize trims and validates the details, and returns when submissions close.
+// Whether that is still in the future is left to the caller: an unchanged end
+// date may already have passed.
+func (d EventDetails) Normalize() (EventDetails, time.Time, error) {
+	d.Name = strings.TrimSpace(d.Name)
+	d.Description = strings.TrimSpace(d.Description)
+	if d.Name == "" || utf8.RuneCountInString(d.Name) > 120 {
+		return d, time.Time{}, errors.New("event name must contain 1–120 characters")
 	}
-	if utf8.RuneCountInString(input.Description) > 1000 {
-		return Event{}, errors.New("description must be at most 1,000 characters")
+	if utf8.RuneCountInString(d.Description) > 1000 {
+		return d, time.Time{}, errors.New("description must be at most 1,000 characters")
 	}
-	date, err := time.Parse("2006-01-02", input.EndDate)
+	date, err := time.Parse("2006-01-02", d.EndDate)
 	if err != nil {
-		return Event{}, errors.New("end date must be YYYY-MM-DD")
+		return d, time.Time{}, errors.New("end date must be YYYY-MM-DD")
 	}
-	closes := date.AddDate(0, 0, 1)
+	return d, date.AddDate(0, 0, 1), nil
+}
+
+var errEndDatePassed = errors.New("end date has already passed in UTC")
+
+func NewEvent(id, employee string, input CreateEvent, now time.Time) (Event, error) {
+	details, closes, err := EventDetails{Name: input.Name, Description: input.Description, EndDate: input.EndDate}.Normalize()
+	if err != nil {
+		return Event{}, err
+	}
 	if !closes.After(now) {
-		return Event{}, errors.New("end date has already passed in UTC")
+		return Event{}, errEndDatePassed
 	}
+	input.Name, input.Description = details.Name, details.Description
 	form := DefaultForm()
 	if input.Form != nil {
 		form = *input.Form
@@ -193,6 +225,7 @@ type LocateInput struct {
 	Shards []string `json:"shards"`
 	Email  string   `json:"email"`
 }
+
 // LocatedLead is what the coordinator needs about an existing participant,
 // without copying their answers into its history.
 type LocatedLead struct {
@@ -217,6 +250,7 @@ func (l LocatedLead) Resolved() LocatedLead {
 func (l Lead) Digest() string {
 	return Submission{Name: l.Name, Role: l.Role, Email: l.Email, Reason: l.Reason, Answers: l.Answers}.Digest()
 }
+
 type ShardPage struct {
 	Leads []Lead `json:"leads"`
 	Total int    `json:"total"`
@@ -260,6 +294,19 @@ func Slug(name string, attempt int) string {
 		base = strings.TrimRight(base[:MaxSlugLength-len(suffix)], "-")
 	}
 	return base + suffix
+}
+
+// MaxAliases bounds how many extra slugs one event reserves.
+const MaxAliases = 10
+
+// NormalizeSlug turns an employee-chosen link into a slug with the same rules
+// as event creation, so "KubeCon 2026" and "kubecon-2026" both work.
+func NormalizeSlug(input string) (string, error) {
+	slug := Slug(input, 0)
+	if slug == "" {
+		return "", errors.New("event link needs letters or digits and can't be a reserved path")
+	}
+	return slug, nil
 }
 
 func EventID(id string) string           { return "event/" + id }

@@ -10,6 +10,7 @@ import (
 
 	enums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/history/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
@@ -249,6 +250,117 @@ func TestIntegrationContinueAsNewAndReplay(t *testing.T) {
 		}
 		if err := replayer.ReplayWorkflowHistory(nil, history); err != nil {
 			t.Fatalf("replay %v: %v", execution, err)
+		}
+	}
+}
+
+func TestIntegrationSlugAliasesReserveRouteAndReplay(t *testing.T) {
+	address := os.Getenv("TEMPORAL_INTEGRATION_ADDRESS")
+	if address == "" {
+		t.Skip("set TEMPORAL_INTEGRATION_ADDRESS to run against a local Temporal dev server")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	c, err := client.DialContext(ctx, client.Options{HostPort: address, Namespace: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	id := fmt.Sprintf("it%d", time.Now().UnixNano())
+	other, alias := id+"-b", id+"-renamed"
+	newWorker := func() worker.Worker {
+		w := worker.New(c, id, worker.Options{})
+		w.RegisterWorkflow(EventWorkflow)
+		w.RegisterWorkflow(ParticipantShardWorkflow)
+		w.RegisterWorkflow(EventAliasWorkflow)
+		return w
+	}
+	w := newWorker()
+	if err := w.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { w.Stop() }()
+	now := time.Now().UTC()
+	start := func(slug string, closes, completes time.Duration) client.WorkflowRun {
+		event := Event{ID: slug, Name: "Integration", EndDate: now.Format("2006-01-02"), ClosesAt: now.Add(closes), CompletesAt: now.Add(completes), Shards: []string{}}
+		run, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: EventID(slug), TaskQueue: id, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE, WorkflowExecutionErrorWhenAlreadyStarted: true}, EventWorkflow, EventState{Event: event})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return run
+	}
+	run := start(id, 10*time.Second, 15*time.Second)
+	defer c.CancelWorkflow(context.Background(), EventID(id), "")
+	start(other, time.Hour, 2*time.Hour)
+	defer c.CancelWorkflow(context.Background(), EventID(other), "")
+	defer c.CancelWorkflow(context.Background(), EventID(alias), "")
+	update := func(slug, name string, arg any) (Event, error) {
+		h, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{WorkflowID: EventID(slug), UpdateName: name, Args: []any{arg}, WaitForStage: client.WorkflowUpdateStageCompleted})
+		if err != nil {
+			return Event{}, err
+		}
+		var event Event
+		err = h.Get(ctx, &event)
+		return event, err
+	}
+	renamed, err := update(id, "slug", alias)
+	if err != nil || renamed.Link() != alias || len(renamed.Aliases) != 1 {
+		t.Fatalf("rename: %+v %v", renamed, err)
+	}
+	// Neither the new alias nor the first event's original slug can be taken.
+	for _, taken := range []string{alias, id} {
+		_, err := update(other, "slug", taken)
+		var app *temporal.ApplicationError
+		if !errors.As(err, &app) || app.Type() != "Invalid" {
+			t.Fatalf("took %q: %v", taken, err)
+		}
+	}
+	if _, err := update(id, "details", EventDetails{Name: "Renamed integration", EndDate: now.Format("2006-01-02")}); err != nil {
+		t.Fatal(err)
+	}
+	// Replace the worker so both workflows rebuild their state from history.
+	w.Stop()
+	w = newWorker()
+	if err := w.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for _, slug := range []string{id, alias} {
+		event, err := LoadEvent(ctx, c, slug)
+		if err != nil || event.ID != id || event.Name != "Renamed integration" || event.Link() != alias {
+			t.Fatalf("load %q: %+v %v", slug, event, err)
+		}
+	}
+	if err := run.Get(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.GetWorkflow(ctx, EventID(alias), "").Get(ctx, nil); err != nil {
+		t.Fatalf("alias did not finish with its event: %v", err)
+	}
+	// While retained, the completed alias still routes and still reserves its slug.
+	if event, err := LoadEvent(ctx, c, alias); err != nil || event.ID != id || event.Status != "archived" {
+		t.Fatalf("retained alias: %+v %v", event, err)
+	}
+	_, err = c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: EventID(alias), TaskQueue: id, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE, WorkflowExecutionErrorWhenAlreadyStarted: true}, EventWorkflow, EventState{Event: Event{ID: alias}})
+	var started *serviceerror.WorkflowExecutionAlreadyStarted
+	if !errors.As(err, &started) {
+		t.Fatalf("retained alias slug was reusable: %v", err)
+	}
+	replayer := worker.NewWorkflowReplayer()
+	replayer.RegisterWorkflow(EventWorkflow)
+	replayer.RegisterWorkflow(ParticipantShardWorkflow)
+	replayer.RegisterWorkflow(EventAliasWorkflow)
+	for _, workflowID := range []string{EventID(id), EventID(alias), EventID(other)} {
+		iterator := c.GetWorkflowHistory(ctx, workflowID, "", false, enums.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+		history := &history.History{}
+		for iterator.HasNext() {
+			e, err := iterator.Next()
+			if err != nil {
+				t.Fatal(err)
+			}
+			history.Events = append(history.Events, e)
+		}
+		if err := replayer.ReplayWorkflowHistory(nil, history); err != nil {
+			t.Fatalf("replay %s: %v", workflowID, err)
 		}
 	}
 }

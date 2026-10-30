@@ -150,7 +150,7 @@ func (s Service) submitParticipant(ctx context.Context, input SubmitParticipantI
 		return SubmitParticipantResult{}, nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "this event is no longer accepting submissions")
 	}
 	handle, err := s.Client.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
-		WorkflowID: EventID(input.EventID), UpdateID: submission.RequestID + "-" + submission.Digest(),
+		WorkflowID: EventID(event.ID), UpdateID: submission.RequestID + "-" + submission.Digest(),
 		UpdateName: "submit", Args: []any{submission}, WaitForStage: client.WorkflowUpdateStageCompleted,
 	})
 	if err != nil {
@@ -195,19 +195,44 @@ func (s Service) claimFlightPass(ctx context.Context, input ClaimFlightPassInput
 }
 
 func (s Service) event(ctx context.Context, id string) (Event, error) {
-	var event Event
-	result, err := s.Client.QueryWorkflow(ctx, EventID(id), "", "event")
+	event, err := LoadEvent(ctx, s.Client, id)
 	if err != nil {
-		return event, err
+		return Event{}, err
 	}
-	if err := result.Get(&event); err != nil {
-		return event, err
-	}
-	event = event.At(time.Now())
 	if event.DeletedAt != nil {
 		return Event{}, serviceerror.NewNotFound("event deleted")
 	}
 	return event, nil
+}
+
+// LoadEvent reads an event through any of its slugs, with its status as of now.
+// Callers decide what a deleted event means to them.
+func LoadEvent(ctx context.Context, c client.Client, slug string) (Event, error) {
+	event, err := queryEvent(ctx, c, slug)
+	if err != nil {
+		return Event{}, err
+	}
+	if event.ID != slug {
+		target := event.ID
+		if event, err = queryEvent(ctx, c, target); err != nil {
+			return Event{}, err
+		}
+		// Reachable only if the alias outlived its event and the event's slug was reused.
+		if event.ID != target {
+			return Event{}, serviceerror.NewNotFound("event alias no longer points to an event")
+		}
+	}
+	return event.At(time.Now()), nil
+}
+
+func queryEvent(ctx context.Context, c client.Client, slug string) (Event, error) {
+	var event Event
+	result, err := c.QueryWorkflow(ctx, EventID(slug), "", "event")
+	if err != nil {
+		return Event{}, err
+	}
+	err = result.Get(&event)
+	return event, err
 }
 
 func (s Service) queue() string {

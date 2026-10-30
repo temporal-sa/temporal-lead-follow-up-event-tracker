@@ -64,6 +64,9 @@
   };
   // A form export holds everything needed to set up the same event again, except its dates.
   const formExportKind = "temporal-event-form";
+  const exportedEvent = (event) => ({ kind: formExportKind, version: 1, exportedAt: new Date().toISOString(), name: event.name, description: event.description || "", qrBanner: event.qrBanner || "", form: event.form || EventForms.defaultForm() });
+  // Duplicate event hands the same export to the create form across one navigation.
+  const duplicateKey = "duplicate-event";
   const download = (blob, filename) => {
     const blobURL = URL.createObjectURL(blob);
     const anchor = node("a");
@@ -240,6 +243,18 @@
     });
     get("cancel-create").addEventListener("click", hideCreate);
     let formBuilder = EventForms.builder(get("form-builder"));
+    // Fills the create form from an export; the end date is always left for the employee to choose.
+    const prefill = (source, badgeText) => {
+      formBuilder = EventForms.builder(get("form-builder"), source.form);
+      if (typeof source.name === "string") get("create-name").value = source.name;
+      if (typeof source.description === "string") get("create-description").value = source.description;
+      if (typeof source.qrBanner === "string") {
+        get("create-qr-banner").value = source.qrBanner;
+        get("create-qr-banner").dispatchEvent(new Event("input"));
+      }
+      get("create-template-badge").textContent = badgeText;
+      return formBuilder.validate();
+    };
     get("import-form").addEventListener("click", () => get("import-form-file").click());
     get("import-form-file").addEventListener("change", async () => {
       const file = get("import-form-file").files[0];
@@ -256,15 +271,7 @@
         feedback("create-feedback", "That file isn’t a form export. Choose a .json file from Export form on an event page.", "error", true);
         return;
       }
-      formBuilder = EventForms.builder(get("form-builder"), imported.form);
-      if (typeof imported.name === "string") get("create-name").value = imported.name;
-      if (typeof imported.description === "string") get("create-description").value = imported.description;
-      if (typeof imported.qrBanner === "string") {
-        get("create-qr-banner").value = imported.qrBanner;
-        get("create-qr-banner").dispatchEvent(new Event("input"));
-      }
-      get("create-template-badge").textContent = "Imported form";
-      const problem = formBuilder.validate();
+      const problem = prefill(imported, "Imported form");
       if (problem) feedback("create-feedback", `Imported ${file.name}, but it needs a fix before you can create the event. ${problem}`, "error", true);
       else feedback("create-feedback", `Imported ${file.name}. Choose the last day for responses, review the questions, and create the event.`, "success");
       get("create-end-date").focus();
@@ -279,6 +286,20 @@
       date.setUTCDate(date.getUTCDate() + 1);
       get("create-date-help").textContent = `Submissions close ${dateText(date)}. Responses remain available to view and export for as long as Temporal retains them.`;
     });
+    const duplicate = sessionStorage.getItem(duplicateKey);
+    sessionStorage.removeItem(duplicateKey);
+    if (duplicate) {
+      let source = null;
+      try { source = JSON.parse(duplicate); } catch (_) { /* A damaged handoff just opens an empty form. */ }
+      get("create-section").hidden = false;
+      get("show-create").setAttribute("aria-expanded", "true");
+      if (Array.isArray(source?.form?.sections)) {
+        const problem = prefill(source, "Copy of event");
+        if (problem) feedback("create-feedback", `Copied “${source.name}”, but it needs a fix before you can create the event. ${problem}`, "error", true);
+        else feedback("create-feedback", `Copied “${source.name}”. Choose the last day for responses, review everything, and create the event.`, "success");
+      }
+      get("create-end-date").focus();
+    }
     let creating = false;
     get("create-form").addEventListener("submit", async (submission) => {
       submission.preventDefault();
@@ -310,18 +331,23 @@
     await load();
   }
 
-  async function detail(id) {
-    const url = eventPath(id);
+  async function detail(requestedId) {
     let event;
-    try { event = await api(url); }
+    try { event = await api(eventPath(requestedId)); }
     catch (error) {
       errorPage("Event unavailable", failure(error));
       return;
     }
+    // An earlier link opens the same event; from here on, address it by its own ID.
+    const id = event.id;
+    const url = eventPath(id);
+    if (requestedId !== id) history.replaceState(null, "", `/admin/events/${encodeURIComponent(id)}`);
+    const link = () => event.slug || event.id;
     document.title = `${event.name} · Temporal responses`;
     render("detail-template");
     showFlash();
     const refreshSummary = () => {
+      document.title = `${event.name} · Temporal responses`;
       get("detail-name").textContent = event.name;
       setDescription("detail-description", event.description);
       badge(get("detail-status"), event.status);
@@ -329,17 +355,76 @@
       get("detail-closes").textContent = dateText(event.endedAt || event.closesAt);
       get("detail-end").hidden = event.status !== "open";
       get("form-edit-toggle").hidden = event.status === "archived";
+      get("detail-form-preview").href = formPath(link());
       let lifecycle = "";
       if (event.completesAt) {
         lifecycle = "Responses remain available to view and export for as long as Temporal retains them.";
       }
       get("detail-lifecycle").textContent = lifecycle;
       get("detail-lifecycle").hidden = !lifecycle;
+      // Only the end date locks when submissions close; the text stays editable until the event completes.
+      const open = event.status === "open";
+      get("details-fields").disabled = event.status === "archived";
+      get("detail-edit-end-date").disabled = !open;
+      get("detail-edit-date-help").textContent = open
+        ? "Submissions close at midnight UTC after this date. Responses remain available to view and export for as long as Temporal retains them."
+        : "Submissions have closed, so the end date can no longer change. To run it again, use Duplicate event.";
+      get("detail-slug").disabled = get("slug-save").disabled = event.status === "archived";
+      const earlier = [event.id, ...(event.aliases || [])].filter((slug) => slug !== link());
+      let help = earlier.length
+        ? `Earlier links and printed QR codes still open this event: ${earlier.map((slug) => `/${slug}`).join(", ")}.`
+        : "Changing the link keeps this one working too, including QR codes you've already printed.";
+      if ((event.aliases || []).length >= 10) help += " This event has used all 10 extra links, but you can switch back to any of these.";
+      get("slug-help").textContent = help;
     };
+    // Inputs are filled on load and after their own save, so another save can't overwrite unsaved edits.
+    const fillDetails = () => {
+      get("detail-edit-name").value = event.name;
+      get("detail-edit-description").value = event.description || "";
+      get("detail-edit-end-date").value = event.endDate;
+    };
+    get("detail-edit-end-date").min = new Date().toISOString().slice(0, 10);
+    get("detail-slug-origin").textContent = `${location.host}/`;
+    fillDetails();
+    get("detail-slug").value = link();
     refreshSummary();
     get("detail-qr").href = `/admin/events/${encodeURIComponent(id)}/qr`;
-    get("detail-form-preview").href = formPath(id);
     get("detail-banner").value = event.qrBanner || "";
+    get("details-form").addEventListener("submit", async (submission) => {
+      submission.preventDefault();
+      if (get("details-save").disabled || !submission.currentTarget.reportValidity()) return;
+      const restore = busy(get("details-save"), "Saving…");
+      feedback("details-feedback", "");
+      try {
+        const endDateChanged = get("detail-edit-end-date").value !== event.endDate;
+        event = await post(`${url}/details`, {
+          name: get("detail-edit-name").value.trim(),
+          description: get("detail-edit-description").value.trim(),
+          endDate: get("detail-edit-end-date").value,
+        });
+        fillDetails();
+        refreshSummary();
+        toast(endDateChanged ? `Details saved. Submissions now close ${dateText(event.closesAt)}.` : "Details saved.");
+      } catch (error) { feedback("details-feedback", failure(error), "error", true); }
+      finally { restore(); refreshSummary(); }
+    });
+    get("slug-form").addEventListener("submit", async (submission) => {
+      submission.preventDefault();
+      if (get("slug-save").disabled || !submission.currentTarget.reportValidity()) return;
+      const restore = busy(get("slug-save"), "Saving…");
+      feedback("slug-feedback", "");
+      try {
+        event = await post(`${url}/slug`, { slug: get("detail-slug").value.trim() });
+        get("detail-slug").value = link();
+        refreshSummary();
+        toast(`Link saved: ${location.host}/${link()}. New QR codes use it.`);
+      } catch (error) { feedback("slug-feedback", failure(error), "error", true); }
+      finally { restore(); refreshSummary(); }
+    });
+    get("detail-duplicate").addEventListener("click", () => {
+      sessionStorage.setItem(duplicateKey, JSON.stringify(exportedEvent(event)));
+      location.assign("/admin");
+    });
     get("banner-form").addEventListener("submit", async (submission) => {
       submission.preventDefault();
       if (get("banner-save").disabled) return;
@@ -353,7 +438,7 @@
       finally { restore(); }
     });
     get("detail-copy").addEventListener("click", async () => {
-      const link = `${location.origin}${formPath(id)}`;
+      const link = `${location.origin}${formPath(event.slug || event.id)}`;
       try {
         await navigator.clipboard.writeText(link);
         const button = get("detail-copy");
@@ -492,8 +577,7 @@
     });
     get("form-cancel").addEventListener("click", () => { closeEditor(); get("form-edit-toggle").focus(); });
     get("form-export").addEventListener("click", () => {
-      const exported = { kind: formExportKind, version: 1, exportedAt: new Date().toISOString(), name: event.name, description: event.description || "", qrBanner: event.qrBanner || "", form: event.form || EventForms.defaultForm() };
-      download(new Blob([`${JSON.stringify(exported, null, 2)}\n`], { type: "application/json" }), `${event.id}-form.json`);
+      download(new Blob([`${JSON.stringify(exportedEvent(event), null, 2)}\n`], { type: "application/json" }), `${event.id}-form.json`);
       toast("Form exported. Use Import form when you create an event to set it up the same way.");
     });
     let savingForm = false;

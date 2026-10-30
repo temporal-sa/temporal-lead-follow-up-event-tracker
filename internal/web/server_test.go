@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/temporal-sa/temporal-lead-follow-up-event-tracker/internal/qrcode"
 	"github.com/temporal-sa/temporal-lead-follow-up-event-tracker/internal/tracker"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/temporal"
@@ -35,6 +36,12 @@ type fakeGateway struct {
 	deleteError error
 	forms       []tracker.Form
 	taken       map[string]bool
+	edited      []string
+	details     []tracker.EventDetails
+	slugs       []string
+	editError   error
+	submittedTo string
+	endedID     string
 }
 
 func (g *fakeGateway) Create(_ context.Context, event tracker.Event) error {
@@ -54,11 +61,13 @@ func (g *fakeGateway) Event(context.Context, string) (tracker.Event, error) {
 	}
 	return g.event, nil
 }
-func (g *fakeGateway) Submit(_ context.Context, _ string, input tracker.Submission) error {
+func (g *fakeGateway) Submit(_ context.Context, id string, input tracker.Submission) error {
 	g.submission = &input
+	g.submittedTo = id
 	return g.submitError
 }
-func (g *fakeGateway) End(context.Context, string) (tracker.Event, error) {
+func (g *fakeGateway) End(_ context.Context, id string) (tracker.Event, error) {
+	g.endedID = id
 	g.event.Status = "ended"
 	return g.event, nil
 }
@@ -83,6 +92,24 @@ func (g *fakeGateway) Form(_ context.Context, _ string, form tracker.Form) (trac
 	g.forms = append(g.forms, form)
 	g.event.Form = &form
 	g.event.Revision++
+	return g.event, nil
+}
+func (g *fakeGateway) Details(_ context.Context, id string, details tracker.EventDetails) (tracker.Event, error) {
+	g.edited = append(g.edited, id)
+	g.details = append(g.details, details)
+	if g.editError != nil {
+		return tracker.Event{}, g.editError
+	}
+	g.event.Name, g.event.Description, g.event.EndDate = details.Name, details.Description, details.EndDate
+	return g.event, nil
+}
+func (g *fakeGateway) Slug(_ context.Context, id, slug string) (tracker.Event, error) {
+	g.edited = append(g.edited, id)
+	g.slugs = append(g.slugs, slug)
+	if g.editError != nil {
+		return tracker.Event{}, g.editError
+	}
+	g.event.Slug = slug
 	return g.event, nil
 }
 func (g *fakeGateway) Page(_ context.Context, id string, offset, limit int) (tracker.ShardPage, error) {
@@ -414,5 +441,85 @@ func TestDeleteRemovesEventFromTheAPI(t *testing.T) {
 	w = request(t, h, "POST", "/api/events/demo/participants", `{"name":"Ada","role":"Engineer","email":"ada@example.com","requestId":"01234567-89ab-cdef-0123-456789abcdef"}`, "", "")
 	if w.Code != http.StatusNotFound || g.submission != nil {
 		t.Fatalf("deleted event accepted a submission: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDetailsAndSlugEditsUseTheResolvedEvent(t *testing.T) {
+	const origin = "https://leads.tmprl-demo.cloud"
+	tests := []struct {
+		name, path, body, origin string
+		status                   string
+		want                     int
+		edited                   bool
+	}{
+		{"details through alias", "/api/admin/events/renamed/details", `{"name":"  Renamed  ","description":" Hi ","endDate":"2099-01-02"}`, origin, "open", 200, true},
+		{"slug through alias", "/api/admin/events/renamed/slug", `{"slug":"KubeCon 2026"}`, origin, "open", 200, true},
+		{"details without origin", "/api/admin/events/demo/details", `{"name":"Renamed","endDate":"2099-01-02"}`, "", "open", 403, false},
+		{"blank name", "/api/admin/events/demo/details", `{"name":" ","endDate":"2099-01-02"}`, origin, "open", 400, false},
+		{"bad date", "/api/admin/events/demo/details", `{"name":"Renamed","endDate":"tomorrow"}`, origin, "open", 400, false},
+		{"reserved slug", "/api/admin/events/demo/slug", `{"slug":"admin"}`, origin, "open", 400, false},
+		{"archived details", "/api/admin/events/demo/details", `{"name":"Renamed","endDate":"2099-01-02"}`, origin, "archived", 410, false},
+		{"archived slug", "/api/admin/events/demo/slug", `{"slug":"later"}`, origin, "archived", 410, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := &fakeGateway{event: tracker.Event{ID: "demo", Name: "Conference", EndDate: "2099-01-01", Status: tt.status}}
+			w := request(t, testHandler(t, g), "POST", tt.path, tt.body, validSession, tt.origin)
+			if w.Code != tt.want {
+				t.Fatalf("status = %d, want %d: %s", w.Code, tt.want, w.Body.String())
+			}
+			if tt.edited != (len(g.edited) == 1) || tt.edited && g.edited[0] != "demo" {
+				t.Fatalf("edited %v", g.edited)
+			}
+		})
+	}
+	g := &fakeGateway{event: tracker.Event{ID: "demo", Status: "open"}}
+	request(t, testHandler(t, g), "POST", "/api/admin/events/demo/details", `{"name":"  Renamed  ","description":" Hi ","endDate":"2099-01-02"}`, validSession, origin)
+	if len(g.details) != 1 || g.details[0] != (tracker.EventDetails{Name: "Renamed", Description: "Hi", EndDate: "2099-01-02"}) {
+		t.Fatalf("details not normalized: %+v", g.details)
+	}
+	request(t, testHandler(t, g), "POST", "/api/admin/events/demo/slug", `{"slug":"KubeCon 2026"}`, validSession, origin)
+	if len(g.slugs) != 1 || g.slugs[0] != "kubecon-2026" {
+		t.Fatalf("slug not normalized: %v", g.slugs)
+	}
+	g = &fakeGateway{event: tracker.Event{ID: "demo", Status: "open"}, editError: temporal.NewApplicationError("that event link is already in use", "Invalid")}
+	w := request(t, testHandler(t, g), "POST", "/api/admin/events/demo/slug", `{"slug":"taken"}`, validSession, origin)
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "already in use") {
+		t.Fatalf("taken slug: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAliasRequestsReachTheEvent(t *testing.T) {
+	g := &fakeGateway{event: tracker.Event{ID: "demo", Slug: "renamed", Status: "open"}}
+	h := testHandler(t, g)
+	w := request(t, h, "POST", "/api/events/old-tab-link/participants", `{"name":"Ada","role":"Engineer","email":"ada@example.com","requestId":"01234567-89ab-cdef-0123-456789abcdef"}`, "", "")
+	if w.Code != 200 || g.submission == nil || g.submittedTo != "demo" {
+		t.Fatalf("submit through alias: %d %s, submitted to %q", w.Code, w.Body.String(), g.submittedTo)
+	}
+	w = request(t, h, "POST", "/api/admin/events/old-tab-link/banner", `{"banner":"Hi"}`, validSession, "https://leads.tmprl-demo.cloud")
+	if w.Code != 200 || len(g.banners) != 1 {
+		t.Fatalf("banner through alias: %d %s", w.Code, w.Body.String())
+	}
+	w = request(t, h, "POST", "/api/admin/events/old-tab-link/end", `{}`, validSession, "https://leads.tmprl-demo.cloud")
+	if w.Code != 200 || g.endedID != "demo" {
+		t.Fatalf("end through alias: %d %s, ended %q", w.Code, w.Body.String(), g.endedID)
+	}
+}
+
+func TestQRCodeLinksToTheCurrentSlug(t *testing.T) {
+	var encoded []string
+	for _, event := range []tracker.Event{{ID: "demo"}, {ID: "demo", Slug: "renamed"}} {
+		w := request(t, testHandler(t, &fakeGateway{event: event}), "GET", "/events/old/qr.png", "", "", "")
+		if w.Code != 200 {
+			t.Fatal(w.Code)
+		}
+		encoded = append(encoded, w.Body.String())
+	}
+	want, err := qrcode.EncodePNG("https://leads.tmprl-demo.cloud/renamed", 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if encoded[0] == encoded[1] || encoded[1] != string(want) {
+		t.Fatal("QR code does not follow the current slug")
 	}
 }
