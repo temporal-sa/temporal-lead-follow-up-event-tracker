@@ -68,12 +68,33 @@ window.EventForms = (() => {
     return select;
   };
 
-  // options: feedback (element ID for problems), eventName/eventDescription (preview text), help (intro copy).
+  // options: feedback (element ID for problems), eventName/eventDescription (preview text), help (intro copy),
+  // internalOnly (Name and Email are answered by the attendee's sign-in, so they are fixed).
   function builder(container, initial = defaultForm(), options = {}) {
     const schema = clone(initial || defaultForm());
     const feedbackId = options.feedback || "create-feedback";
     const eventName = options.eventName || (() => document.getElementById("create-name").value);
     const eventDescription = options.eventDescription || (() => document.getElementById("create-description").value);
+    let internalOnly = Boolean(options.internalOnly);
+    const fixed = (field) => internalOnly && (field.id === "name" || field.id === "email");
+    // The server requires a required short-answer name question in the first section of an
+    // internal-only form. Keep the template's question where it is, or put one back at the top.
+    const ensureIdentity = () => {
+      const first = schema.sections[0];
+      let index = first.fields.findIndex((field) => field.id === "name");
+      let existing = first.fields[index];
+      if (index < 0) {
+        schema.sections.forEach((section) => {
+          const elsewhere = section.fields.findIndex((field) => field.id === "name");
+          if (elsewhere >= 0) existing = section.fields.splice(elsewhere, 1)[0];
+        });
+        index = 0;
+        first.fields.unshift(null);
+      }
+      const keep = existing?.type === "short_text";
+      first.fields[index] = { id: "name", label: keep && existing.label.trim() ? existing.label : "Name", description: keep ? existing.description || "" : "", type: "short_text", required: true };
+      cleanupRoutes();
+    };
     let active = schema.sections[0].fields[0]?.id;
     const cleanupRoutes = () => {
       schema.sections.forEach((section, index) => {
@@ -104,7 +125,7 @@ window.EventForms = (() => {
       const message = node("p", "feedback"); message.hidden = true; message.setAttribute("role", "status");
       form.append(fieldset, message, node("p", "form-note", "Preview only. Your answers won’t be saved."));
       dialog.append(form); document.body.append(dialog);
-      const navigator = mountParticipant(fieldset, clone(schema));
+      const navigator = mountParticipant(fieldset, clone(schema), internalOnly ? { locked: { name: "Your name", email: "you@temporal.io" } } : {});
       form.addEventListener("submit", (event) => {
         event.preventDefault();
         if (navigator.advance() !== null) {
@@ -130,12 +151,13 @@ window.EventForms = (() => {
       const title = node("span", "question-summary-title", field.label || "Untitled question");
       const type = node("span", "question-type", types[field.type]);
       if (field.required) type.append(node("span", "required-marker", " *"));
+      if (fixed(field)) type.append(node("span", "autofill-marker", " · Auto-filled"));
       heading.append(icon, title, type, node("span", "question-chevron", active === field.id ? "−" : "+"));
       card.append(heading);
       if (active !== field.id) return card;
       const editor = node("div", "question-editor-body");
       const main = node("div", "editor-main-row");
-      const label = textControl(field.label, (value) => { field.label = value; title.textContent = value || "Untitled question"; }, { maxLength: 200, required: true });
+      const label = textControl(field.label, (value) => { field.label = value; title.textContent = value || "Untitled question"; }, { maxLength: 200, required: true, disabled: fixed(field) });
       main.append(editorControl("Question", label));
       const typeInput = selectControl(Object.entries(types), field.type, (value) => {
         field.type = value;
@@ -145,9 +167,9 @@ window.EventForms = (() => {
         if (["linear_scale", "rating"].includes(value)) { field.min = 1; field.max = 5; }
         render();
       });
-      typeInput.disabled = field.id === "email";
+      typeInput.disabled = field.id === "email" || fixed(field);
       main.append(editorControl("Answer type", typeInput));
-      editor.append(main, editorControl("Help text", textControl(field.description, (value) => { field.description = value; }, { maxLength: 1000, placeholder: "Add instructions for this question (optional)" })));
+      editor.append(main, editorControl("Help text", textControl(field.description, (value) => { field.description = value; }, { maxLength: 1000, placeholder: "Add instructions for this question (optional)", disabled: fixed(field) })));
       if (choiceTypes.includes(field.type)) {
         const choices = textControl((field.options || []).join("\n"), (value) => { field.options = value.split("\n").map((item) => item.trim()).filter(Boolean); }, { multiline: true, rows: 3, maxLength: 10000, required: true });
         choices.addEventListener("change", () => { cleanupRoutes(); render(); });
@@ -201,7 +223,7 @@ window.EventForms = (() => {
       const up = button("↑", () => move(section.fields, index, -1)); up.disabled = index === 0; up.setAttribute("aria-label", `Move ${field.label} up`);
       const down = button("↓", () => move(section.fields, index, 1)); down.disabled = index === section.fields.length - 1; down.setAttribute("aria-label", `Move ${field.label} down`);
       tools.append(up, down);
-      if (field.id !== "email") {
+      if (field.id !== "email" && !fixed(field)) {
         const duplicate = button("Duplicate", () => {
           if (fields(schema).length >= 100) return;
           const copy = clone(field); copy.id = uid("field"); copy.label = `${field.label} (copy)`; delete copy.branches;
@@ -219,7 +241,8 @@ window.EventForms = (() => {
         }
       }
       footer.append(tools);
-      if (field.id === "email") footer.append(node("span", "pinned-field", "Required email · used to merge repeat responses"));
+      if (fixed(field)) footer.append(node("span", "pinned-field", "Required · auto-filled from the attendee’s Temporal sign-in"));
+      else if (field.id === "email") footer.append(node("span", "pinned-field", "Required email · used to merge repeat responses"));
       else {
         const toggle = node("label", "required-toggle");
         const checkbox = node("input"); checkbox.type = "checkbox"; checkbox.checked = Boolean(field.required);
@@ -273,8 +296,14 @@ window.EventForms = (() => {
         if (missing) { active = missing.id; render(); return `Check “${missing.label || "Untitled question"}”: add a question label and valid, unique choices or rows. Scale ranges must start at 0 or 1 and end at 2–10 (3–10 for ratings).`; }
         return "";
     };
+    if (internalOnly) ensureIdentity();
     render();
-    return { value: () => { cleanupRoutes(); return clone(schema); }, validate };
+    const setInternalOnly = (value) => {
+      internalOnly = value;
+      if (internalOnly) ensureIdentity();
+      render();
+    };
+    return { value: () => { cleanupRoutes(); return clone(schema); }, validate, setInternalOnly };
   }
 
   // options.locked maps a field ID to an answer the participant can't change, such as

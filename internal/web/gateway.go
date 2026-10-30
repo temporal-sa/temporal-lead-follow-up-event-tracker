@@ -29,6 +29,7 @@ type Gateway interface {
 	Banner(context.Context, string, string) (tracker.Event, error)
 	Preview(context.Context, string, tracker.LinkPreview) (tracker.Event, error)
 	Form(context.Context, string, tracker.Form) (tracker.Event, error)
+	InternalOnly(context.Context, string, tracker.Form) (tracker.Event, error)
 	Details(context.Context, string, tracker.EventDetails) (tracker.Event, error)
 	Slug(context.Context, string, string) (tracker.Event, error)
 	Page(context.Context, string, int, int) (tracker.ShardPage, error)
@@ -194,6 +195,10 @@ func (g *temporalGateway) Preview(ctx context.Context, id string, preview tracke
 
 func (g *temporalGateway) Form(ctx context.Context, id string, form tracker.Form) (tracker.Event, error) {
 	return g.edit(ctx, id, "form", form)
+}
+
+func (g *temporalGateway) InternalOnly(ctx context.Context, id string, form tracker.Form) (tracker.Event, error) {
+	return g.edit(ctx, id, "internalOnly", form)
 }
 
 func (g *temporalGateway) Details(ctx context.Context, id string, details tracker.EventDetails) (tracker.Event, error) {

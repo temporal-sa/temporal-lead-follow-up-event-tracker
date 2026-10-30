@@ -271,6 +271,18 @@ func (f Form) Normalize() (Form, error) {
 	return f, nil
 }
 
+// RequireIdentityFields checks a normalized form for an internal-only event: the
+// sign-in answers its required email question and a required short-answer name
+// question, so both must be in the first section, which every participant sees.
+func (f Form) RequireIdentityFields() error {
+	for _, field := range f.Sections[0].Fields {
+		if field.ID == "name" && field.Type == "short_text" && field.Required {
+			return nil
+		}
+	}
+	return errors.New("internal-only events need a required short-answer name question in the first section")
+}
+
 func validateDestination(destination string, from int, indexes map[string]int) error {
 	if destination == "" || destination == "submit" {
 		return nil

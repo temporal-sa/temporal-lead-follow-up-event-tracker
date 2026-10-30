@@ -48,7 +48,7 @@ type Event struct {
 	// Preview is how the event's link unfurls in Slack and other apps; nil means defaults.
 	Preview *LinkPreview `json:"preview,omitempty"`
 	// InternalOnly events accept responses only from signed-in employees, whose
-	// name and email come from the catalog instead of the form. Set at creation.
+	// name and email come from the catalog instead of the form. Once set, it stays.
 	InternalOnly bool `json:"internalOnly,omitempty"`
 }
 
@@ -164,6 +164,11 @@ func NewEvent(id, employee string, input CreateEvent, now time.Time) (Event, err
 	form, err = form.Normalize()
 	if err != nil {
 		return Event{}, err
+	}
+	if input.InternalOnly {
+		if err := form.RequireIdentityFields(); err != nil {
+			return Event{}, err
+		}
 	}
 	banner, err := NormalizeBanner(input.QRBanner)
 	if err != nil {

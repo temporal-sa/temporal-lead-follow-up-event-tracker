@@ -21,29 +21,30 @@ import (
 )
 
 type fakeGateway struct {
-	event       tracker.Event
-	shards      map[string][]tracker.Lead
-	pageError   error
-	submitError error
-	submission  *tracker.Submission
-	created     *tracker.Event
-	queryCalls  int
-	queryHook   func(*fakeGateway)
-	pageCalls   int
-	banners     []string
-	bannerError error
-	previews    []tracker.LinkPreview
-	eventError  error
-	deleted     []string
-	deleteError error
-	forms       []tracker.Form
-	taken       map[string]bool
-	edited      []string
-	details     []tracker.EventDetails
-	slugs       []string
-	editError   error
-	submittedTo string
-	endedID     string
+	event         tracker.Event
+	shards        map[string][]tracker.Lead
+	pageError     error
+	submitError   error
+	submission    *tracker.Submission
+	created       *tracker.Event
+	queryCalls    int
+	queryHook     func(*fakeGateway)
+	pageCalls     int
+	banners       []string
+	bannerError   error
+	previews      []tracker.LinkPreview
+	eventError    error
+	deleted       []string
+	deleteError   error
+	forms         []tracker.Form
+	internalForms []tracker.Form
+	taken         map[string]bool
+	edited        []string
+	details       []tracker.EventDetails
+	slugs         []string
+	editError     error
+	submittedTo   string
+	endedID       string
 }
 
 func (g *fakeGateway) Create(_ context.Context, event tracker.Event) error {
@@ -101,6 +102,13 @@ func (g *fakeGateway) Preview(_ context.Context, _ string, preview tracker.LinkP
 func (g *fakeGateway) Form(_ context.Context, _ string, form tracker.Form) (tracker.Event, error) {
 	g.forms = append(g.forms, form)
 	g.event.Form = &form
+	g.event.Revision++
+	return g.event, nil
+}
+func (g *fakeGateway) InternalOnly(_ context.Context, _ string, form tracker.Form) (tracker.Event, error) {
+	g.internalForms = append(g.internalForms, form)
+	g.event.Form = &form
+	g.event.InternalOnly = true
 	g.event.Revision++
 	return g.event, nil
 }

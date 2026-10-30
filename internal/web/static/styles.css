@@ -193,6 +193,7 @@ select:disabled{opacity:.65}
 .editor-button.delete-button{color:#f59b84}
 .move-field-select{width:auto;max-width:210px;min-height:36px;font-size:12px;padding-block:6px}
 .pinned-field{font-size:12px;color:var(--mint)}
+.autofill-marker{color:var(--mint)}
 .required-toggle{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--off-white);margin:0;cursor:pointer}
 .required-toggle input{width:17px;min-height:17px;height:17px;margin:0;accent-color:var(--mint)}
 .section-editor-footer{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;padding:18px 22px;border-top:1px solid var(--line)}

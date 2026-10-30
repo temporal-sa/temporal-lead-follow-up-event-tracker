@@ -314,6 +314,42 @@ func TestSubmitLabelIsTrimmedAndBounded(t *testing.T) {
 	}
 }
 
+func TestInternalOnlyFormsNeedARequiredNameQuestionUpFront(t *testing.T) {
+	email := Field{ID: "email", Label: "Email", Type: "email", Required: true}
+	name := Field{ID: "name", Label: "Name", Type: "short_text", Required: true}
+	optional, dropdown := name, name
+	optional.Required = false
+	dropdown.Type, dropdown.Options = "dropdown", []string{"Ada"}
+	for _, tc := range []struct {
+		label    string
+		sections []Section
+		valid    bool
+	}{
+		{"template", DefaultForm().Sections, true},
+		{"no name", []Section{{ID: "a", Fields: []Field{email}}}, false},
+		{"optional name", []Section{{ID: "a", Fields: []Field{email, optional}}}, false},
+		{"name is a dropdown", []Section{{ID: "a", Fields: []Field{email, dropdown}}}, false},
+		{"name in a later section", []Section{{ID: "a", Fields: []Field{email}}, {ID: "b", Fields: []Field{name}}}, false},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			form, err := Form{Sections: tc.sections}.Normalize()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := form.RequireIdentityFields(); (err == nil) != tc.valid {
+				t.Fatalf("RequireIdentityFields = %v, want valid=%v", err, tc.valid)
+			}
+			_, err = NewEvent("internal", "host@temporal.io", CreateEvent{Name: "Summit", EndDate: "2099-01-01", Form: &form, InternalOnly: true}, time.Now())
+			if (err == nil) != tc.valid {
+				t.Fatalf("NewEvent = %v, want valid=%v", err, tc.valid)
+			}
+			if _, err := NewEvent("public", "host@temporal.io", CreateEvent{Name: "Expo", EndDate: "2099-01-01", Form: &form}, time.Now()); err != nil {
+				t.Fatalf("public event rejected: %v", err)
+			}
+		})
+	}
+}
+
 func TestWithParticipantReplacesTypedIdentity(t *testing.T) {
 	const requestID = "01234567-89ab-cdef-0123-456789abcdef"
 	event, err := NewEvent("internal", "host@temporal.io", CreateEvent{Name: "Summit", EndDate: "2099-01-01", InternalOnly: true}, time.Now())

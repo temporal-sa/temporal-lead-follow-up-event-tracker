@@ -123,15 +123,22 @@ current form, so answers to a removed question no longer appear there. A form
 opened before an edit can still be submitted: answers to removed questions are
 dropped, and newly required questions must be answered.
 
-Check **Internal only** when creating an event for a Temporal-only audience. The
-flag is fixed at creation; **Duplicate event**, export, and import carry it. Its
-form then requires the same employee sign-in as the control panel: a visitor
-without one sees **Sign in to respond.** and a catalog login that returns to the
-event's current link. The email question, and the Name question while it is a
-short answer, are filled from the catalog's verified identity and are read-only.
-The server replaces whatever was submitted for them, so a response is always
-recorded under the signed-in employee. When the catalog has no name for the
-employee, they type it. The link preview and QR image stay public.
+Check **Internal only** when creating an event for a Temporal-only audience, or
+turn it on later under **Edit questions** on the event page. It can't be turned
+off again. **Duplicate event**, export, and import carry it. Its form then
+requires the same employee sign-in as the control panel: a visitor without one
+sees **Sign in to respond.** and a catalog login that returns to the event's
+current link. Name and Email become fixed questions, marked **Auto-filled**: they
+stay required in the first section, and their wording, type, and required setting
+can't be edited, nor can they be deleted. Turning the flag on puts a required
+short-answer Name question back at the top if the form had none, or had one of
+another type. The server rejects an internal-only form without those questions,
+both when the flag is set and on every later edit. Attendees see both answers
+filled from the catalog's verified identity, read-only, and the server replaces
+whatever was submitted for them, so a response is always recorded under the
+signed-in employee. When the catalog has no name for the employee, they type it.
+Responses collected before an event became internal-only keep their details. The
+link preview and QR image stay public.
 
 Set a QR-page banner during event creation or update it from the event control
 panel while the event workflow is active. The fullscreen display includes Temporal
@@ -186,6 +193,12 @@ as before, so existing histories replay unchanged. `EventWorkflow` starts each
 An alias answers the `event` Query with only its event's ID, and every lookup
 follows it once to the event. Submissions and edits made through any link are sent
 to the event's own Workflow.
+
+Making an existing event internal-only is the `internalOnly` Update. It carries the
+form along with the flag, so the event never requires sign-in without the Name and
+Email questions the sign-in answers. The server's `POST /api/admin/events/{id}/form`
+sends it instead of the `form` Update when the request sets `internalOnly` on a
+public event.
 
 Both workflow types Continue-As-New when Temporal suggests it (at about 4 MB or
 4K events of history, or 90% of the Update limit). The coordinator's history

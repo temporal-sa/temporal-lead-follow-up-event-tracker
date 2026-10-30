@@ -216,7 +216,37 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 		if state.Event.DeletedAt != nil {
 			return Event{}, temporal.NewApplicationError("this event is no longer available", "Closed")
 		}
+		if state.Event.InternalOnly {
+			if err := form.RequireIdentityFields(); err != nil {
+				return Event{}, temporal.NewApplicationError(err.Error(), "Invalid")
+			}
+		}
 		state.Event.Form = &form
+		state.Event.Revision++
+		return state.Event.At(workflow.Now(ctx)), nil
+	}, workflow.UpdateHandlerOptions{Validator: func(Form) error { return accepting() }}); err != nil {
+		return Event{}, err
+	}
+	// Registering an additional handler emits no commands and preserves existing histories.
+	// The form arrives with the flag so the event never requires sign-in without the
+	// name and email questions the sign-in answers. There is no way back to public.
+	if err := workflow.SetUpdateHandlerWithOptions(ctx, "internalOnly", func(ctx workflow.Context, input Form) (Event, error) {
+		form, err := input.Normalize()
+		if err == nil {
+			err = form.RequireIdentityFields()
+		}
+		if err != nil {
+			return Event{}, temporal.NewApplicationError(err.Error(), "Invalid")
+		}
+		if err := mutex.Lock(ctx); err != nil {
+			return Event{}, err
+		}
+		defer mutex.Unlock()
+		if state.Event.DeletedAt != nil {
+			return Event{}, temporal.NewApplicationError("this event is no longer available", "Closed")
+		}
+		state.Event.Form = &form
+		state.Event.InternalOnly = true
 		state.Event.Revision++
 		return state.Event.At(workflow.Now(ctx)), nil
 	}, workflow.UpdateHandlerOptions{Validator: func(Form) error { return accepting() }}); err != nil {

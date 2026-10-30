@@ -508,13 +508,19 @@ func (s *server) form(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// InternalOnly makes a public event internal-only along with the new form;
+	// false leaves the event as it is, so an internal-only event stays that way.
 	var body struct {
-		Form tracker.Form `json:"form"`
+		Form         tracker.Form `json:"form"`
+		InternalOnly bool         `json:"internalOnly"`
 	}
 	if !s.decode(w, r, &body, true) {
 		return
 	}
 	form, err := body.Form.Normalize()
+	if err == nil && body.InternalOnly {
+		err = form.RequireIdentityFields()
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -528,7 +534,12 @@ func (s *server) form(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusGone, "This event has completed; its questions cannot be changed.")
 		return
 	}
-	event, err := s.gateway.Form(r.Context(), existing.ID, form)
+	var event tracker.Event
+	if body.InternalOnly && !existing.InternalOnly {
+		event, err = s.gateway.InternalOnly(r.Context(), existing.ID, form)
+	} else {
+		event, err = s.gateway.Form(r.Context(), existing.ID, form)
+	}
 	if err != nil {
 		handleError(w, err)
 		return

@@ -254,9 +254,11 @@
     });
     get("cancel-create").addEventListener("click", hideCreate);
     let formBuilder = EventForms.builder(get("form-builder"));
+    get("create-internal-only").addEventListener("change", () => formBuilder.setInternalOnly(get("create-internal-only").checked));
     // Fills the create form from an export; the end date is always left for the employee to choose.
     const prefill = (source, badgeText) => {
-      formBuilder = EventForms.builder(get("form-builder"), source.form);
+      if (typeof source.internalOnly === "boolean") get("create-internal-only").checked = source.internalOnly;
+      formBuilder = EventForms.builder(get("form-builder"), source.form, { internalOnly: get("create-internal-only").checked });
       if (typeof source.name === "string") get("create-name").value = source.name;
       if (typeof source.description === "string") get("create-description").value = source.description;
       if (typeof source.qrBanner === "string") {
@@ -265,7 +267,6 @@
       }
       if (typeof source.preview?.title === "string") get("create-preview-title").value = source.preview.title;
       if (typeof source.preview?.description === "string") get("create-preview-description").value = source.preview.description;
-      if (typeof source.internalOnly === "boolean") get("create-internal-only").checked = source.internalOnly;
       get("create-template-badge").textContent = badgeText;
       return formBuilder.validate();
     };
@@ -604,13 +605,20 @@
     get("form-edit-toggle").addEventListener("click", () => {
       if (!get("form-editor").hidden) { closeEditor(); return; }
       feedback("form-feedback", "");
+      // Internal only can be turned on here, together with the questions it fixes, but never off.
+      get("detail-internal-only").checked = Boolean(event.internalOnly);
+      get("detail-internal-only").disabled = Boolean(event.internalOnly);
+      get("detail-internal-help").textContent = event.internalOnly
+        ? "Attendees sign in with their Temporal account, and Name and Email are filled from that sign-in. An internal-only event stays internal only."
+        : "Require attendees to sign in with their Temporal account. Name and Email become fixed questions filled from that sign-in. Once you save, this can't be turned off.";
       formBuilder = EventForms.builder(get("detail-form-builder"), event.form, {
-        feedback: "form-feedback", eventName: () => event.name, eventDescription: () => event.description,
+        feedback: "form-feedback", eventName: () => event.name, eventDescription: () => event.description, internalOnly: event.internalOnly,
         help: "Add, remove, or reorder questions. The required email question stays in the first section so repeat responses merge.",
       });
       get("form-editor").hidden = false;
       get("form-edit-toggle").setAttribute("aria-expanded", "true");
     });
+    get("detail-internal-only").addEventListener("change", () => formBuilder?.setInternalOnly(get("detail-internal-only").checked));
     get("form-cancel").addEventListener("click", () => { closeEditor(); get("form-edit-toggle").focus(); });
     get("form-export").addEventListener("click", () => {
       download(new Blob([`${JSON.stringify(exportedEvent(event), null, 2)}\n`], { type: "application/json" }), `${event.id}-form.json`);
@@ -628,12 +636,13 @@
       get("form-editor-fields").disabled = true;
       feedback("form-feedback", "");
       try {
-        event = await post(`${url}/form`, { form: formBuilder.value() });
+        const becameInternal = !event.internalOnly && get("detail-internal-only").checked;
+        event = await post(`${url}/form`, { form: formBuilder.value(), internalOnly: get("detail-internal-only").checked });
         refreshSummary();
         closeEditor();
         renderHead();
         feedback("form-feedback", "");
-        toast("Questions saved. New responses use the updated form.");
+        toast(becameInternal ? "Event is now internal only. Attendees sign in with their Temporal account to respond." : "Questions saved. New responses use the updated form.");
         await load(true);
       } catch (error) { feedback("form-feedback", failure(error), "error", true); }
       finally { savingForm = false; restore(); get("form-editor-fields").disabled = false; }

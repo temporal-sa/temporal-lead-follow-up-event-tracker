@@ -611,6 +611,52 @@ func TestFormUpdateReplacesQuestionsAndSurvivesContinueAsNew(t *testing.T) {
 	}
 }
 
+func TestInternalOnlyUpdateKeepsIdentityQuestionsAndSurvivesContinueAsNew(t *testing.T) {
+	suite := testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+	event := testEvent()
+	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
+	withoutName := Form{Sections: []Section{{ID: "a", Fields: []Field{{ID: "email", Label: "Email", Type: "email", Required: true}}}}}
+	expectInvalid := func(name string) *testsuite.TestUpdateCallback {
+		return &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
+			var application *temporal.ApplicationError
+			if !errors.As(err, &application) || application.Type() != "Invalid" {
+				t.Errorf("%s: err = %v", name, err)
+			}
+		}}
+	}
+	checked := false
+	env.RegisterDelayedCallback(func() {
+		env.UpdateWorkflow("internalOnly", "without-name", expectInvalid("internalOnly without a name question"), withoutName)
+		env.UpdateWorkflow("internalOnly", "valid", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
+			if result, _ := value.(Event); err != nil || !result.InternalOnly || result.Revision != 1 {
+				t.Errorf("internalOnly = %+v, %v", value, err)
+			}
+		}}, DefaultForm())
+		// Once internal-only, a form edit can't drop the name question the sign-in answers.
+		env.UpdateWorkflow("form", "drop-name", expectInvalid("form edit without a name question"), withoutName)
+		env.UpdateWorkflow("form", "keep-name", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
+			if result, _ := value.(Event); err != nil || !result.InternalOnly {
+				t.Errorf("form = %+v, %v", value, err)
+			}
+			checked = true
+			env.SetContinueAsNewSuggested(true)
+		}}, DefaultForm())
+	}, time.Second)
+	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
+	var continuation *workflow.ContinueAsNewError
+	if !errors.As(env.GetWorkflowError(), &continuation) {
+		t.Fatal(env.GetWorkflowError())
+	}
+	var state EventState
+	if err := converter.GetDefaultDataConverter().FromPayloads(continuation.Input, &state); err != nil {
+		t.Fatal(err)
+	}
+	if !checked || !state.Event.InternalOnly {
+		t.Fatalf("internal-only lost: %+v", state.Event)
+	}
+}
+
 func TestDetailsUpdateReschedulesCompletion(t *testing.T) {
 	for _, tc := range []struct {
 		name, endDate string

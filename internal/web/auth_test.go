@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -342,6 +343,42 @@ func TestInternalOnlySubmissionUsesTheSignedInIdentity(t *testing.T) {
 			}
 			if g.submission == nil || g.submission.Email != "zoe@temporal.io" || g.submission.Name != tt.wantName || g.submission.Role != "SA" {
 				t.Fatalf("submission = %#v", g.submission)
+			}
+		})
+	}
+}
+
+func TestFormEditCanMakeAnEventInternalOnlyButNotPublic(t *testing.T) {
+	const origin = "https://leads.tmprl-demo.cloud"
+	template, err := json.Marshal(tracker.DefaultForm())
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutName := `{"sections":[{"id":"a","title":"","description":"","fields":[{"id":"email","label":"Email","description":"","type":"email","required":true}]}]}`
+	tests := []struct {
+		name             string
+		internal         bool
+		form             string
+		requestInternal  bool
+		want             int
+		switched, edited bool
+	}{
+		{"make internal", false, string(template), true, 200, true, false},
+		{"make internal without a name question", false, withoutName, true, 400, false, false},
+		{"public edit stays public", false, withoutName, false, 200, false, true},
+		{"internal edit stays internal", true, string(template), false, 200, false, true},
+		{"internal again is a plain edit", true, string(template), true, 200, false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := &fakeGateway{event: tracker.Event{ID: "demo", Status: "open", InternalOnly: tt.internal}}
+			body := fmt.Sprintf(`{"form":%s,"internalOnly":%t}`, tt.form, tt.requestInternal)
+			w := request(t, testHandler(t, g), "POST", "/api/admin/events/demo/form", body, validSession, origin)
+			if w.Code != tt.want || (len(g.internalForms) == 1) != tt.switched || (len(g.forms) == 1) != tt.edited {
+				t.Fatalf("status = %d, internal updates=%d form updates=%d: %s", w.Code, len(g.internalForms), len(g.forms), w.Body.String())
+			}
+			if tt.want == 200 && g.event.InternalOnly != (tt.internal || tt.requestInternal) {
+				t.Fatalf("internalOnly = %v", g.event.InternalOnly)
 			}
 		})
 	}
