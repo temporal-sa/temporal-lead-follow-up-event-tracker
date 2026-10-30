@@ -83,7 +83,7 @@ date can only change while submissions are open; moving it moves the close time
 and the seven-day completion with it, earlier or later. Once an event has ended,
 by date or with **End event**, its end date is fixed. To run it again, use
 **Duplicate event**, which opens the create form with the name, welcome message,
-questions, and QR banner filled in and the end date left blank.
+questions, QR banner, and link preview filled in and the end date left blank.
 
 Change an event's link under **Event link**. The new slug follows the same rules as
 creation. Every earlier link, including the original, keeps opening the same event,
@@ -106,7 +106,7 @@ without one, they see a default thank-you.
 
 To run the same event again, click **Export form** on the event page. It
 downloads a JSON file with the questions, sections, button text, confirmation
-message, welcome message, and QR banner. In a new event, click **Import form**
+message, welcome message, QR banner, and link preview. In a new event, click **Import form**
 to load that file, then choose the end date. The server validates the imported
 form like any other.
 
@@ -127,6 +127,17 @@ Set a QR-page banner during event creation or update it from the event control
 panel while the event workflow is active. The fullscreen display includes Temporal
 branding, the event name, banner, and a QR code linking to the public form. It
 adapts to a phone, desktop, or presentation screen.
+
+Set how an event's link unfurls in Slack and other apps under **Link preview**,
+during creation or on the event page until the event completes. The server
+renders the title and description as Open Graph and Twitter tags into the page at
+`/{slug}` and `/events/{id}`, with `og:url` set to the event's current link. A
+blank title uses the event name; a blank description uses the welcome message, or
+a generic line when there is none. Every event uses the same Temporal image,
+`static/link-preview.png`. Other pages, and links to missing or deleted
+events, keep the generic tags. Apps cache previews, so a link already posted can
+keep showing its old preview for a while. Export, import, and **Duplicate event**
+carry the preview.
 
 Emails are trimmed and lowercased; the newest submission replaces the
 existing participant's details within that event. The same person may join

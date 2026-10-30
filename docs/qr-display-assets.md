@@ -33,3 +33,13 @@ Composition/framing: Retain the exact square canvas dimensions, mascot position,
 Constraints: Change ONLY the two eye areas. Preserve all eight legs and claws, lavender-blue body, pink cheeks, single tooth, open mouth and tongue. Do not resize, reframe, or redesign the character. No movement of the head or mouth. Maintain real alpha transparency everywhere the original is transparent.
 Avoid: No background, stars, text, watermark, accessories, extra facial features, changes to shading or body pose, or drawn checkerboard.
 ```
+
+## Link preview image
+
+`internal/web/static/link-preview.png` is the 1200×630 image every event link shows when it unfurls in Slack and other apps. Its source is `docs/link-preview-image.html`, which uses the repo's Temporal logo and Manrope font. After editing it, regenerate the PNG from the repo root:
+
+```sh
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --disable-gpu --hide-scrollbars \
+  --allow-file-access-from-files --force-device-scale-factor=1 --window-size=1200,630 \
+  --screenshot=internal/web/static/link-preview.png "file://$PWD/docs/link-preview-image.html"
+```

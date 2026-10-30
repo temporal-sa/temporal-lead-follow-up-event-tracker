@@ -26,6 +26,7 @@ type Gateway interface {
 	End(context.Context, string) (tracker.Event, error)
 	Delete(context.Context, string) error
 	Banner(context.Context, string, string) (tracker.Event, error)
+	Preview(context.Context, string, tracker.LinkPreview) (tracker.Event, error)
 	Form(context.Context, string, tracker.Form) (tracker.Event, error)
 	Details(context.Context, string, tracker.EventDetails) (tracker.Event, error)
 	Slug(context.Context, string, string) (tracker.Event, error)
@@ -169,6 +170,10 @@ func (g *temporalGateway) End(ctx context.Context, id string) (tracker.Event, er
 
 func (g *temporalGateway) Banner(ctx context.Context, id, banner string) (tracker.Event, error) {
 	return g.edit(ctx, id, "banner", banner)
+}
+
+func (g *temporalGateway) Preview(ctx context.Context, id string, preview tracker.LinkPreview) (tracker.Event, error) {
+	return g.edit(ctx, id, "preview", preview)
 }
 
 func (g *temporalGateway) Form(ctx context.Context, id string, form tracker.Form) (tracker.Event, error) {

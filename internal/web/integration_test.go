@@ -169,6 +169,10 @@ func TestIntegrationCustomFormDedupeBannerAndExportAfterWorkerRestart(t *testing
 	if response.Code != http.StatusOK {
 		t.Fatalf("banner update: %d %s", response.Code, response.Body.String())
 	}
+	response = request(t, h, "POST", "/api/admin/events/"+event.ID+"/preview", `{"title":"Find us at booth 7","description":"Durable demos & swag."}`, validSession, "https://leads.tmprl-demo.cloud")
+	if response.Code != http.StatusOK {
+		t.Fatalf("preview update: %d %s", response.Code, response.Body.String())
+	}
 	w.Stop()
 	w = newWorker()
 	if err := w.Start(); err != nil {
@@ -186,5 +190,9 @@ func TestIntegrationCustomFormDedupeBannerAndExportAfterWorkerRestart(t *testing
 	response = request(t, h, "GET", "/admin/events/"+event.ID+"/qr", "", validSession, "")
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "See you at the next conversation.") {
 		t.Fatalf("replayed QR banner: %d %s", response.Code, response.Body.String())
+	}
+	response = request(t, h, "GET", "/"+event.ID, "", "", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `<meta property="og:title" content="Find us at booth 7">`) || !strings.Contains(response.Body.String(), `<meta property="og:description" content="Durable demos &amp; swag.">`) {
+		t.Fatalf("replayed link preview: %d %s", response.Code, response.Body.String())
 	}
 }

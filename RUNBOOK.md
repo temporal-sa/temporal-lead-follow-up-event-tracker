@@ -74,6 +74,7 @@ Optionally, change the event too:
 3. Open the old link and the new one. Both show the attendee form with the new name.
 4. Say: "The old link is still reserved by a small Workflow that points at this event, so printed QR codes keep working, and no other event can take it."
 5. For proof, `event/<new-link>` is a running `EventAliasWorkflow`, and the event's history shows `details` and `slug` Updates.
+6. Under **LINK PREVIEW**, set a title and description and click **Save preview**. The page says "Link preview saved." Paste the event link into Slack to see it unfurl. Slack caches previews, so paste a link it hasn't seen yet, such as a newly changed one. To check without Slack, run `curl -s https://events.tmprl-demo.cloud/<link> | grep og:`.
 
 ### 5. Export the responses
 

@@ -45,6 +45,47 @@ type Event struct {
 	// alias keep routing to the event for as long as it is retained.
 	Slug    string   `json:"slug,omitempty"`
 	Aliases []string `json:"aliases,omitempty"`
+	// Preview is how the event's link unfurls in Slack and other apps; nil means defaults.
+	Preview *LinkPreview `json:"preview,omitempty"`
+}
+
+// LinkPreview is the title and description an event's link shows when it is
+// shared. Empty fields fall back to the event's name and welcome message.
+type LinkPreview struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+}
+
+const defaultPreviewDescription = "Stay in touch with Temporal after your event."
+
+func (p LinkPreview) Normalize() (LinkPreview, error) {
+	p.Title = strings.TrimSpace(p.Title)
+	p.Description = strings.TrimSpace(p.Description)
+	if utf8.RuneCountInString(p.Title) > 120 {
+		return p, errors.New("link preview title must be at most 120 characters")
+	}
+	if utf8.RuneCountInString(p.Description) > 300 {
+		return p, errors.New("link preview description must be at most 300 characters")
+	}
+	return p, nil
+}
+
+// EffectivePreview is what the event's link shows, with defaults filled in.
+func (e Event) EffectivePreview() LinkPreview {
+	var preview LinkPreview
+	if e.Preview != nil {
+		preview = *e.Preview
+	}
+	if preview.Title == "" {
+		preview.Title = e.Name
+	}
+	if preview.Description == "" {
+		preview.Description = e.Description
+	}
+	if preview.Description == "" {
+		preview.Description = defaultPreviewDescription
+	}
+	return preview
 }
 
 // Link is the slug for the event's public URL and QR code.
@@ -67,11 +108,12 @@ func (e Event) At(now time.Time) Event {
 }
 
 type CreateEvent struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	EndDate     string `json:"endDate"`
-	Form        *Form  `json:"form,omitempty"`
-	QRBanner    string `json:"qrBanner,omitempty"`
+	Name        string       `json:"name"`
+	Description string       `json:"description"`
+	EndDate     string       `json:"endDate"`
+	Form        *Form        `json:"form,omitempty"`
+	QRBanner    string       `json:"qrBanner,omitempty"`
+	Preview     *LinkPreview `json:"preview,omitempty"`
 }
 
 // EventDetails are the fields an employee sets at creation and can edit later.
@@ -123,7 +165,17 @@ func NewEvent(id, employee string, input CreateEvent, now time.Time) (Event, err
 	if err != nil {
 		return Event{}, err
 	}
-	return Event{ID: id, Name: input.Name, Description: input.Description, EndDate: input.EndDate, CreatedBy: employee, CreatedAt: now.UTC(), ClosesAt: closes, CompletesAt: closes.AddDate(0, 0, 7), Shards: []string{}, Status: "open", Form: &form, QRBanner: banner}, nil
+	var preview *LinkPreview
+	if input.Preview != nil {
+		normalized, err := input.Preview.Normalize()
+		if err != nil {
+			return Event{}, err
+		}
+		if normalized != (LinkPreview{}) {
+			preview = &normalized
+		}
+	}
+	return Event{ID: id, Name: input.Name, Description: input.Description, EndDate: input.EndDate, CreatedBy: employee, CreatedAt: now.UTC(), ClosesAt: closes, CompletesAt: closes.AddDate(0, 0, 7), Shards: []string{}, Status: "open", Form: &form, QRBanner: banner, Preview: preview}, nil
 }
 
 type Submission struct {

@@ -32,6 +32,8 @@ type fakeGateway struct {
 	pageCalls   int
 	banners     []string
 	bannerError error
+	previews    []tracker.LinkPreview
+	eventError  error
 	deleted     []string
 	deleteError error
 	forms       []tracker.Form
@@ -58,6 +60,9 @@ func (g *fakeGateway) Event(context.Context, string) (tracker.Event, error) {
 	g.queryCalls++
 	if g.queryHook != nil {
 		g.queryHook(g)
+	}
+	if g.eventError != nil {
+		return tracker.Event{}, g.eventError
 	}
 	return g.event, nil
 }
@@ -86,6 +91,11 @@ func (g *fakeGateway) Banner(_ context.Context, _ string, banner string) (tracke
 		return tracker.Event{}, g.bannerError
 	}
 	g.event.QRBanner = banner
+	return g.event, nil
+}
+func (g *fakeGateway) Preview(_ context.Context, _ string, preview tracker.LinkPreview) (tracker.Event, error) {
+	g.previews = append(g.previews, preview)
+	g.event.Preview = &preview
 	return g.event, nil
 }
 func (g *fakeGateway) Form(_ context.Context, _ string, form tracker.Form) (tracker.Event, error) {

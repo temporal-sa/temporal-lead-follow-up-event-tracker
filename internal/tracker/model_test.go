@@ -104,3 +104,24 @@ func TestShardByteCapacityAndGrowingLead(t *testing.T) {
 		t.Fatal("growing record must leave original intact until relocated")
 	}
 }
+
+func TestNewEventKeepsOnlyANonEmptyPreview(t *testing.T) {
+	now := time.Date(2026, 10, 7, 15, 0, 0, 0, time.UTC)
+	for _, input := range []*LinkPreview{nil, {}, {Title: "  ", Description: " \n "}} {
+		event, err := NewEvent("id", "employee@temporal.io", CreateEvent{Name: "Conference", EndDate: "2026-10-07", Preview: input}, now)
+		if err != nil || event.Preview != nil {
+			t.Fatalf("empty preview %+v stored as %+v (%v)", input, event.Preview, err)
+		}
+	}
+	event, err := NewEvent("id", "employee@temporal.io", CreateEvent{Name: "Conference", EndDate: "2026-10-07", Preview: &LinkPreview{Title: "  Booth 7 "}}, now)
+	if err != nil || event.Preview == nil || *event.Preview != (LinkPreview{Title: "Booth 7"}) {
+		t.Fatalf("preview=%+v err=%v", event.Preview, err)
+	}
+	if _, err := NewEvent("id", "employee@temporal.io", CreateEvent{Name: "Conference", EndDate: "2026-10-07", Preview: &LinkPreview{Description: strings.Repeat("é", 301)}}, now); err == nil {
+		t.Fatal("long preview description accepted")
+	}
+	data, err := json.Marshal(Event{ID: "id"})
+	if err != nil || strings.Contains(string(data), "preview") {
+		t.Fatalf("event without a preview serializes one: %s", data)
+	}
+}

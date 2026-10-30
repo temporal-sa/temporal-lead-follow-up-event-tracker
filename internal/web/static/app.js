@@ -64,7 +64,7 @@
   };
   // A form export holds everything needed to set up the same event again, except its dates.
   const formExportKind = "temporal-event-form";
-  const exportedEvent = (event) => ({ kind: formExportKind, version: 1, exportedAt: new Date().toISOString(), name: event.name, description: event.description || "", qrBanner: event.qrBanner || "", form: event.form || EventForms.defaultForm() });
+  const exportedEvent = (event) => ({ kind: formExportKind, version: 1, exportedAt: new Date().toISOString(), name: event.name, description: event.description || "", qrBanner: event.qrBanner || "", preview: { title: event.preview?.title || "", description: event.preview?.description || "" }, form: event.form || EventForms.defaultForm() });
   // Duplicate event hands the same export to the create form across one navigation.
   const duplicateKey = "duplicate-event";
   const download = (blob, filename) => {
@@ -252,6 +252,8 @@
         get("create-qr-banner").value = source.qrBanner;
         get("create-qr-banner").dispatchEvent(new Event("input"));
       }
+      if (typeof source.preview?.title === "string") get("create-preview-title").value = source.preview.title;
+      if (typeof source.preview?.description === "string") get("create-preview-description").value = source.preview.description;
       get("create-template-badge").textContent = badgeText;
       return formBuilder.validate();
     };
@@ -308,7 +310,7 @@
       if (formProblem) { feedback("create-feedback", formProblem, "error", true); return; }
       if (!submission.currentTarget.reportValidity()) return;
       const values = new FormData(submission.currentTarget);
-      const body = { name: String(values.get("name") || "").trim(), description: String(values.get("description") || "").trim(), endDate: values.get("endDate"), form: formBuilder.value(), qrBanner: get("create-qr-banner").value.trim() };
+      const body = { name: String(values.get("name") || "").trim(), description: String(values.get("description") || "").trim(), endDate: values.get("endDate"), form: formBuilder.value(), qrBanner: get("create-qr-banner").value.trim(), preview: { title: get("create-preview-title").value.trim(), description: get("create-preview-description").value.trim() } };
       if (!body.name) {
         feedback("create-feedback", "Please enter an event name.", "error", true);
         return;
@@ -370,6 +372,9 @@
         ? "Submissions close at midnight UTC after this date. Responses remain available to view and export for as long as Temporal retains them."
         : "Submissions have closed, so the end date can no longer change. To run it again, use Duplicate event.";
       get("detail-slug").disabled = get("slug-save").disabled = event.status === "archived";
+      get("preview-fields").disabled = event.status === "archived";
+      get("detail-preview-title").placeholder = event.name;
+      get("detail-preview-description").placeholder = event.description || "Stay in touch with Temporal after your event.";
       const earlier = [event.id, ...(event.aliases || [])].filter((slug) => slug !== link());
       let help = earlier.length
         ? `Earlier links and printed QR codes still open this event: ${earlier.map((slug) => `/${slug}`).join(", ")}.`
@@ -390,6 +395,24 @@
     refreshSummary();
     get("detail-qr").href = `/admin/events/${encodeURIComponent(id)}/qr`;
     get("detail-banner").value = event.qrBanner || "";
+    const fillPreview = () => {
+      get("detail-preview-title").value = event.preview?.title || "";
+      get("detail-preview-description").value = event.preview?.description || "";
+    };
+    fillPreview();
+    get("preview-form").addEventListener("submit", async (submission) => {
+      submission.preventDefault();
+      if (get("preview-save").disabled) return;
+      const restore = busy(get("preview-save"), "Saving…");
+      feedback("preview-feedback", "");
+      try {
+        event = await post(`${url}/preview`, { title: get("detail-preview-title").value.trim(), description: get("detail-preview-description").value.trim() });
+        fillPreview();
+        refreshSummary();
+        toast("Link preview saved.");
+      } catch (error) { feedback("preview-feedback", failure(error), "error", true); }
+      finally { restore(); refreshSummary(); }
+    });
     get("details-form").addEventListener("submit", async (submission) => {
       submission.preventDefault();
       if (get("details-save").disabled || !submission.currentTarget.reportValidity()) return;

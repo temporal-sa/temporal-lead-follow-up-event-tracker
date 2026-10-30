@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -436,6 +437,62 @@ func TestBannerUpdateAndSchemaSurviveContinueAsNew(t *testing.T) {
 	}
 	if !checked || state.Event.QRBanner != "Meet our team" || state.Event.Revision != 1 || !reflect.DeepEqual(state.Event.Form, &form) {
 		t.Fatalf("schema/banner lost: %+v", state.Event)
+	}
+}
+
+func TestPreviewUpdateSurvivesContinueAsNewAndClears(t *testing.T) {
+	suite := testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+	event := testEvent()
+	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
+	steps := []struct {
+		input    LinkPreview
+		want     *LinkPreview
+		revision int64
+	}{
+		{LinkPreview{Title: "  Booth 7  ", Description: " Say hi "}, &LinkPreview{Title: "Booth 7", Description: "Say hi"}, 1},
+		{LinkPreview{Title: "Booth 7", Description: "Say hi"}, &LinkPreview{Title: "Booth 7", Description: "Say hi"}, 1},
+		{LinkPreview{}, nil, 2},
+		{LinkPreview{Title: "Booth 9"}, &LinkPreview{Title: "Booth 9"}, 3},
+	}
+	checked := 0
+	for i, step := range steps {
+		env.RegisterDelayedCallback(func() {
+			env.UpdateWorkflow("preview", fmt.Sprintf("preview-%d", i), &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				result := value.(Event)
+				if !reflect.DeepEqual(result.Preview, step.want) || result.Revision != step.revision {
+					t.Errorf("step %d: preview=%+v revision=%d", i, result.Preview, result.Revision)
+				}
+				checked++
+				if checked == len(steps) {
+					env.SetContinueAsNewSuggested(true)
+				}
+			}}, step.input)
+		}, time.Duration(i+1)*time.Second)
+	}
+	env.RegisterDelayedCallback(func() {
+		env.UpdateWorkflow("preview", "too-long", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
+			var application *temporal.ApplicationError
+			if !errors.As(err, &application) || application.Type() != "Invalid" {
+				t.Errorf("long preview: %v", err)
+			}
+		}}, LinkPreview{Title: strings.Repeat("x", 121)})
+	}, 500*time.Millisecond)
+	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
+	var continuation *workflow.ContinueAsNewError
+	if !errors.As(env.GetWorkflowError(), &continuation) {
+		t.Fatal(env.GetWorkflowError())
+	}
+	var state EventState
+	if err := converter.GetDefaultDataConverter().FromPayloads(continuation.Input, &state); err != nil {
+		t.Fatal(err)
+	}
+	if checked != len(steps) || !reflect.DeepEqual(state.Event.Preview, &LinkPreview{Title: "Booth 9"}) || state.Event.Revision != 3 {
+		t.Fatalf("preview lost: %+v", state.Event)
 	}
 }
 

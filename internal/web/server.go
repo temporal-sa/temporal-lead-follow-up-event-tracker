@@ -107,6 +107,7 @@ func newHandler(config Config, gateway Gateway, authTransport http.RoundTripper)
 	mux.HandleFunc("POST /api/admin/events/{id}/end", s.admin(s.endEvent))
 	mux.HandleFunc("POST /api/admin/events/{id}/delete", s.admin(s.deleteEvent))
 	mux.HandleFunc("POST /api/admin/events/{id}/banner", s.admin(s.banner))
+	mux.HandleFunc("POST /api/admin/events/{id}/preview", s.admin(s.preview))
 	mux.HandleFunc("POST /api/admin/events/{id}/form", s.admin(s.form))
 	mux.HandleFunc("POST /api/admin/events/{id}/details", s.admin(s.details))
 	mux.HandleFunc("POST /api/admin/events/{id}/slug", s.admin(s.slug))
@@ -117,7 +118,7 @@ func newHandler(config Config, gateway Gateway, authTransport http.RoundTripper)
 	mux.HandleFunc("GET /admin", s.admin(s.index))
 	mux.HandleFunc("GET /admin/events/{id}", s.admin(s.index))
 	mux.HandleFunc("GET /events/{id}/qr.png", s.qrImage)
-	mux.HandleFunc("GET /events/{id}", s.index)
+	mux.HandleFunc("GET /events/{id}", s.attendeePage)
 	// Event links are /{slug}; /events/{id} stays for QR codes printed before slugs.
 	mux.HandleFunc("GET /{id}", s.eventPage)
 	mux.HandleFunc("GET /{$}", s.index)
@@ -165,14 +166,27 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 	}{email != "", email, s.loginURL()})
 }
 
+var indexTemplate = template.Must(template.ParseFS(assets, "static/index.html"))
+
+// linkPreview fills the page's Open Graph tags, which Slack and other apps read
+// when a link is shared. Those crawlers don't run JavaScript, and need an
+// absolute image URL.
+type linkPreview struct {
+	Title, Description, URL, ImageURL string
+}
+
 func (s *server) index(w http.ResponseWriter, r *http.Request) {
-	data, err := assets.ReadFile("static/index.html")
-	if err != nil {
+	s.renderIndex(w, nil)
+}
+
+func (s *server) renderIndex(w http.ResponseWriter, preview *linkPreview) {
+	var body bytes.Buffer
+	if err := indexTemplate.Execute(&body, struct{ Preview *linkPreview }{preview}); err != nil {
 		writeError(w, http.StatusInternalServerError, "Page is unavailable.")
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(data)
+	_, _ = w.Write(body.Bytes())
 }
 
 func (s *server) eventPage(w http.ResponseWriter, r *http.Request) {
@@ -180,7 +194,22 @@ func (s *server) eventPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	s.index(w, r)
+	s.attendeePage(w, r)
+}
+
+// attendeePage serves the app with the event's link preview. An event that
+// can't be loaded gets the generic page, which shows the error itself.
+func (s *server) attendeePage(w http.ResponseWriter, r *http.Request) {
+	event, err := s.getEvent(r)
+	if err != nil {
+		s.renderIndex(w, nil)
+		return
+	}
+	preview := event.EffectivePreview()
+	s.renderIndex(w, &linkPreview{
+		Title: preview.Title, Description: preview.Description,
+		URL: s.config.PublicURL + "/" + event.Link(), ImageURL: s.config.PublicURL + "/static/link-preview.png",
+	})
 }
 
 func eventID(r *http.Request) (string, error) {
@@ -407,6 +436,38 @@ func (s *server) banner(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	event, err := s.gateway.Banner(r.Context(), existing.ID, body.Banner)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, event)
+}
+
+func (s *server) preview(w http.ResponseWriter, r *http.Request) {
+	id, err := eventID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var body tracker.LinkPreview
+	if !s.decode(w, r, &body, true) {
+		return
+	}
+	preview, err := body.Normalize()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	existing, err := s.visibleEvent(r.Context(), id)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if existing.Status == "archived" {
+		writeError(w, http.StatusGone, "This event has completed; its link preview cannot be changed.")
+		return
+	}
+	event, err := s.gateway.Preview(r.Context(), existing.ID, preview)
 	if err != nil {
 		handleError(w, err)
 		return
