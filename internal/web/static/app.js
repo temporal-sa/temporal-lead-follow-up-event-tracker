@@ -310,7 +310,7 @@
       get("create-end-date").focus();
     });
     get("create-qr-banner").addEventListener("input", () => {
-      get("create-banner-preview").textContent = get("create-qr-banner").value.trim() || "Scan to keep the conversation going.";
+      get("create-banner-preview").textContent = get("create-qr-banner").value.trim() || "Scan to stay in touch.";
     });
     get("create-end-date").min = new Date().toISOString().slice(0, 10);
     get("create-end-date").addEventListener("change", () => {

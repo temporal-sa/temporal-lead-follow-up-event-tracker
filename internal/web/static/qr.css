@@ -8,12 +8,8 @@ body{display:grid;place-items:center;position:relative;isolation:isolate;backgro
 body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;background:url("/static/temporal-stars.avif") center top / max(1400px,100vw) auto repeat;opacity:.48}
 .qr-display{width:min(1320px,100%);display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:center;gap:clamp(40px,6vw,100px);padding:clamp(32px,6vw,88px)}
 .brand{display:block;width:215px;height:auto;margin-bottom:clamp(40px,8vh,84px)}
-.eyebrow,.qr-caption{font-family:"Noto Sans Mono",ui-monospace,Menlo,monospace;font-size:11px;font-weight:500;letter-spacing:.15em;line-height:1.6}
-.eyebrow{color:#cacbf9;margin:0 0 20px}
 h1{font-size:clamp(32px,4.7vw,64px);font-weight:300;line-height:1.05;letter-spacing:-.04em;margin:0 0 24px;overflow-wrap:anywhere}
-.banner{font-size:clamp(20px,2.3vw,30px);line-height:1.45;margin:0 0 28px;white-space:pre-line;overflow-wrap:anywhere;color:#ecedf5}
-.qr-instruction{font-size:15px;line-height:1.65;color:#92a4c3;margin:0}
-.qr-instruction span{display:block}
+.banner{font-size:clamp(20px,2.3vw,30px);line-height:1.45;margin:0;white-space:pre-line;overflow-wrap:anywhere;color:#ecedf5}
 .qr-panel{min-width:0;padding-top:clamp(84px,9vw,132px)}
 .qr-stage{position:relative;isolation:isolate}
 .ziggy{position:absolute;z-index:-1;top:0;right:3%;width:64%;height:auto;pointer-events:none;transform-origin:50% 65%;transform:translateY(-44%) rotate(7deg);animation:ziggy-peek 10s ease-in-out infinite}
@@ -22,8 +18,6 @@ h1{font-size:clamp(32px,4.7vw,64px);font-weight:300;line-height:1.05;letter-spac
 .ziggy-blink{position:absolute;inset:0;opacity:0;animation:ziggy-eyes-closed 10s steps(1,end) infinite}
 .qr-frame{position:relative;padding:16px;background:#fff;border-radius:20px;box-shadow:0 24px 80px #0006,0 0 80px #444ce724}
 .qr-code{display:block;width:100%;height:auto;image-rendering:pixelated}
-.qr-caption{display:flex;justify-content:space-between;gap:12px;margin:20px 4px 0;color:#92a4c3}
-.qr-caption span{font-size:24px;line-height:1;color:#1ff1a5}
 @keyframes ziggy-peek{
   0%,12%,27%,72%,100%{transform:translateY(-44%) rotate(7deg)}
   19%,87%{transform:translateY(-47%) rotate(4deg)}
@@ -43,14 +37,10 @@ h1{font-size:clamp(32px,4.7vw,64px);font-weight:300;line-height:1.05;letter-spac
   body{align-items:start}
   .qr-display{max-width:560px;grid-template-columns:1fr;gap:14px;padding:28px 24px}
   .brand{width:172px;margin-bottom:24px}
-  .eyebrow{margin-bottom:10px;font-size:10px}
   h1{font-size:34px;margin-bottom:14px}
-  .banner{font-size:20px;margin-bottom:16px}
-  .qr-instruction{font-size:13px}
-  .qr-instruction span{display:none}
+  .banner{font-size:20px}
   .qr-panel{padding-top:clamp(80px,22vw,116px)}
   .qr-frame{padding:12px;border-radius:16px}
-  .qr-caption{margin-top:14px;font-size:9px;letter-spacing:.12em}
 }
 @media(orientation:landscape) and (max-height:600px) and (min-width:701px){
   .qr-display{gap:32px;padding:24px 40px;max-width:1000px}
@@ -59,6 +49,5 @@ h1{font-size:clamp(32px,4.7vw,64px);font-weight:300;line-height:1.05;letter-spac
   .banner{font-size:20px}
   .qr-panel{padding-top:64px}
   .qr-stage{max-width:min(45vw,60vh);margin:auto}
-  .qr-caption{max-width:min(45vw,60vh);margin:12px auto 0;font-size:9px}
 }
 @media(prefers-reduced-motion:reduce){body:not(.allow-motion) .ziggy,body:not(.allow-motion) .ziggy img{animation:none}}
