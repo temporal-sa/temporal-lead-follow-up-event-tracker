@@ -36,7 +36,11 @@ func TestEventLinksUnfurlWithTheEventPreview(t *testing.T) {
 }
 
 func TestLinkPreviewImageIsServed(t *testing.T) {
-	w := request(t, testHandler(t, &fakeGateway{}), "GET", linkPreviewImage, "", "", "")
+	static, err := loadStaticAssets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := request(t, testHandler(t, &fakeGateway{}), "GET", static.URL("link-preview.png"), "", "", "")
 	if w.Code != 200 || w.Header().Get("Content-Type") != "image/png" {
 		t.Fatalf("%d %s", w.Code, w.Header().Get("Content-Type"))
 	}
@@ -78,7 +82,8 @@ func TestPagesWithoutAnEventKeepTheGenericHead(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			w := request(t, testHandler(t, tt.g), "GET", tt.path, "", validSession, "")
-			body := w.Body.String()
+			// The body may carry the page's data; the head is what link unfurls read.
+			body, _, _ := strings.Cut(w.Body.String(), "</head>")
 			if w.Code != 200 || strings.Contains(body, "og:") || strings.Contains(body, "Conference") || !strings.Contains(body, `<meta name="description" content="Stay in touch with Temporal after your event.">`) {
 				t.Fatalf("%d\n%s", w.Code, body)
 			}

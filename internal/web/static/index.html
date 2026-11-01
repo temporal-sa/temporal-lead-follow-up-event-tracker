@@ -38,7 +38,7 @@
       </div>
     </header>
 
-    <main id="app" class="wrap" tabindex="-1" aria-busy="true">
+    <main id="app" class="wrap" tabindex="-1" aria-busy="true" data-bootstrap="{{.Bootstrap}}">
       <p class="initial-loading" role="status">Loading…</p>
     </main>
     <noscript><p class="noscript wrap">Please enable JavaScript to use this page.</p></noscript>
@@ -108,7 +108,7 @@
                 <div class="field settings-description"><label for="create-subheading">Subheading <span class="optional">Optional</span></label><input id="create-subheading" name="subheading" maxlength="120" aria-describedby="create-subheading-help"><p class="field-help" id="create-subheading-help">Shown above the event name on the attendee form. Leave it blank to show none.</p></div>
                 <div class="field settings-description"><label for="create-description">Welcome message <span class="optional">Optional</span></label><textarea id="create-description" name="description" rows="2" maxlength="1000" placeholder="A short welcome for participants"></textarea></div>
               </div>
-              <p class="field-help" id="create-date-help">Submissions close at midnight UTC after this date. Responses remain available to view and export for as long as Temporal retains them.</p>
+              <p class="field-help" id="create-date-help">Submissions close at midnight UTC after this date. Responses stay available to view and export after the event ends.</p>
               <label class="required-toggle internal-toggle"><input id="create-internal-only" name="internalOnly" type="checkbox" aria-describedby="create-internal-help"><span>Internal only</span></label>
               <p class="field-help" id="create-internal-help">Attendees sign in with their Temporal account to respond. Name and Email become fixed questions filled from that sign-in. You can also turn this on later under Edit questions, but an internal-only event can't go back to public.</p>
               <div id="form-builder" class="form-builder"></div>

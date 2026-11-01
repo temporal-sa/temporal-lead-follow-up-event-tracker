@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
@@ -12,12 +11,14 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"io/fs"
+	"maps"
 	"mime"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -44,6 +45,11 @@ type server struct {
 	gateway      Gateway
 	publicOrigin *url.URL
 	authClient   *http.Client
+	sessions     *sessionCache
+	static       *staticAssets
+	mux          *http.ServeMux
+	indexPage    *template.Template
+	qrDisplay    *template.Template
 }
 
 func New(config Config, gateway Gateway) (http.Handler, error) {
@@ -86,8 +92,19 @@ func newHandler(config Config, gateway Gateway, authTransport http.RoundTripper)
 	if gateway == nil {
 		return nil, errors.New("Temporal gateway is required")
 	}
+	static, err := loadStaticAssets()
+	if err != nil {
+		return nil, err
+	}
+	index, err := assets.ReadFile("static/index.html")
+	if err != nil {
+		return nil, err
+	}
 	s := &server{
 		config: config, gateway: gateway, publicOrigin: public,
+		sessions: newSessionCache(), static: static,
+		indexPage: template.Must(template.New("index").Parse(static.Rewrite(string(index)))),
+		qrDisplay: template.Must(template.New("qr").Parse(static.Rewrite(qrHTML))),
 		authClient: &http.Client{
 			Transport: authTransport,
 			Timeout:   authTimeout,
@@ -97,6 +114,7 @@ func newHandler(config Config, gateway Gateway, authTransport http.RoundTripper)
 		},
 	}
 	mux := http.NewServeMux()
+	s.mux = mux
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -118,19 +136,20 @@ func newHandler(config Config, gateway Gateway, authTransport http.RoundTripper)
 	mux.HandleFunc("GET /api/admin/events/{id}/export.csv", s.admin(s.export))
 	mux.HandleFunc("GET /admin/events/{id}/qr", s.admin(s.qrPage))
 	mux.HandleFunc("GET /admin/events/{id}/qr.png", s.admin(s.qrImage))
-	mux.HandleFunc("GET /admin", s.admin(s.index))
-	mux.HandleFunc("GET /admin/events/{id}", s.admin(s.index))
+	mux.HandleFunc("GET /admin", s.admin(s.dashboardPage))
+	mux.HandleFunc("GET /admin/events/{id}", s.admin(s.eventDetailPage))
 	mux.HandleFunc("GET /events/{id}/qr.png", s.qrImage)
 	mux.HandleFunc("GET /events/{id}", s.attendeePage)
 	// Event links are /{slug}; /events/{id} stays for QR codes printed before slugs.
 	mux.HandleFunc("GET /{id}", s.eventPage)
-	mux.HandleFunc("GET /{$}", s.index)
-	static, err := fs.Sub(assets, "static")
-	if err != nil {
-		return nil, err
-	}
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(static))))
+	mux.HandleFunc("GET /{$}", s.homePage)
+	mux.Handle("GET /static/", static)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t := &timings{entries: map[string]*timing{}}
+		r = r.WithContext(context.WithValue(r.Context(), timingsKey{}, t))
+		writer := &responseWriter{ResponseWriter: w, timings: t, start: time.Now(), acceptsGzip: acceptsGzip(r)}
+		defer writer.finish()
+		w = writer
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "same-origin")
 		w.Header().Set("X-Frame-Options", "DENY")
@@ -180,8 +199,6 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 	}{employee.Email != "", employee.Email, s.loginURL("/admin")})
 }
 
-var indexTemplate = template.Must(template.ParseFS(assets, "static/index.html"))
-
 // linkPreview fills the page's Open Graph tags, which Slack and other apps read
 // when a link is shared. Those crawlers don't run JavaScript, and need an
 // absolute image URL.
@@ -189,29 +206,83 @@ type linkPreview struct {
 	Title, Description, URL, ImageURL string
 }
 
-// linkPreviewImage carries a content hash because Slack caches unfurl images
-// by URL; a changed image needs a new URL to show up.
-var linkPreviewImage = func() string {
-	image, err := assets.ReadFile("static/link-preview.png")
-	if err != nil {
-		panic(err)
+// renderIndex serves the app's page. bootstrap holds the responses of the API
+// calls the page makes first, keyed by path; the app uses each once instead of
+// fetching it, which saves the browser those round trips.
+func (s *server) renderIndex(w http.ResponseWriter, preview *linkPreview, bootstrap map[string]json.RawMessage) {
+	if bootstrap == nil {
+		bootstrap = map[string]json.RawMessage{}
 	}
-	sum := sha256.Sum256(image)
-	return "/static/link-preview.png?v=" + hex.EncodeToString(sum[:6])
-}()
-
-func (s *server) index(w http.ResponseWriter, r *http.Request) {
-	s.renderIndex(w, nil)
-}
-
-func (s *server) renderIndex(w http.ResponseWriter, preview *linkPreview) {
+	data, err := json.Marshal(bootstrap)
+	if err != nil {
+		data = []byte("{}")
+	}
 	var body bytes.Buffer
-	if err := indexTemplate.Execute(&body, struct{ Preview *linkPreview }{preview}); err != nil {
+	if err := s.indexPage.Execute(&body, struct {
+		Preview   *linkPreview
+		Bootstrap string
+	}{preview, string(data)}); err != nil {
 		writeError(w, http.StatusInternalServerError, "Page is unavailable.")
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(body.Bytes())
+}
+
+// prefetch runs the page's first API reads within this request, as the browser
+// would, with its cookies. Only successful responses are kept; for anything
+// else the app makes the request itself and handles the error as usual.
+func (s *server) prefetch(r *http.Request, paths ...string) map[string]json.RawMessage {
+	results := make([]json.RawMessage, len(paths))
+	var wait sync.WaitGroup
+	for i, path := range paths {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			request := httptest.NewRequestWithContext(r.Context(), http.MethodGet, path, nil)
+			for _, cookie := range r.Cookies() {
+				request.AddCookie(cookie)
+			}
+			response := httptest.NewRecorder()
+			s.mux.ServeHTTP(response, request)
+			if response.Code == http.StatusOK {
+				results[i] = response.Body.Bytes()
+			}
+		}()
+	}
+	wait.Wait()
+	bootstrap := map[string]json.RawMessage{}
+	for i, path := range paths {
+		if results[i] != nil {
+			bootstrap[path] = results[i]
+		}
+	}
+	return bootstrap
+}
+
+func (s *server) homePage(w http.ResponseWriter, r *http.Request) {
+	s.renderIndex(w, nil, s.prefetch(r, "/api/session"))
+}
+
+func (s *server) dashboardPage(w http.ResponseWriter, r *http.Request) {
+	s.renderIndex(w, nil, s.prefetch(r, "/api/session", "/api/admin/events"))
+}
+
+func (s *server) eventDetailPage(w http.ResponseWriter, r *http.Request) {
+	id, err := eventID(r)
+	if err != nil {
+		s.renderIndex(w, nil, s.prefetch(r, "/api/session"))
+		return
+	}
+	path := "/api/admin/events/" + url.PathEscape(id)
+	bootstrap := s.prefetch(r, "/api/session", path)
+	// The app reads participants by the event's own ID, which differs when it
+	// was opened through an earlier link.
+	var event struct{ ID string }
+	if json.Unmarshal(bootstrap[path], &event) == nil && event.ID != "" {
+		maps.Copy(bootstrap, s.prefetch(r, "/api/admin/events/"+url.PathEscape(event.ID)+"/participants"))
+	}
+	s.renderIndex(w, nil, bootstrap)
 }
 
 func (s *server) eventPage(w http.ResponseWriter, r *http.Request) {
@@ -227,14 +298,17 @@ func (s *server) eventPage(w http.ResponseWriter, r *http.Request) {
 func (s *server) attendeePage(w http.ResponseWriter, r *http.Request) {
 	event, err := s.getEvent(r)
 	if err != nil {
-		s.renderIndex(w, nil)
+		s.renderIndex(w, nil, nil)
 		return
 	}
 	preview := event.EffectivePreview()
+	// The app reads the event by the path it was opened with.
+	bootstrap := s.prefetch(r, "/api/events/"+url.PathEscape(r.PathValue("id")))
+	// Slack caches unfurl images by URL, so the versioned URL shows a changed image.
 	s.renderIndex(w, &linkPreview{
 		Title: preview.Title, Description: preview.Description,
-		URL: s.config.PublicURL + "/" + event.Link(), ImageURL: s.config.PublicURL + linkPreviewImage,
-	})
+		URL: s.config.PublicURL + "/" + event.Link(), ImageURL: s.config.PublicURL + s.static.URL("link-preview.png"),
+	}, bootstrap)
 }
 
 func eventID(r *http.Request) (string, error) {
@@ -677,9 +751,9 @@ func (s *server) decode(w http.ResponseWriter, r *http.Request, target any, requ
 	return true
 }
 
-var qrTemplate = template.Must(template.New("qr").Parse(`<!doctype html>
+const qrHTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.Name}}</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/static/qr.css"></head>
-<body{{if .AllowMotion}} class="allow-motion"{{end}}><main class="qr-display"><div class="qr-copy"><img class="brand" src="/static/temporal-logo.svg" alt="Temporal"><h1>{{.Name}}</h1><p class="banner">{{.Banner}}</p></div><div class="qr-panel"><div class="qr-stage"><div class="ziggy" aria-hidden="true"><img class="ziggy-open" src="/static/ziggy-peek.png" alt=""><img class="ziggy-blink" src="/static/ziggy-blink.png" alt=""></div><div class="qr-frame"><img class="qr-code" src="{{.ImageURL}}" alt="Scan to open the event form"></div></div></div></main></body></html>`))
+<body{{if .AllowMotion}} class="allow-motion"{{end}}><main class="qr-display"><div class="qr-copy"><img class="brand" src="/static/temporal-logo.svg" alt="Temporal"><h1>{{.Name}}</h1><p class="banner">{{.Banner}}</p></div><div class="qr-panel"><div class="qr-stage"><div class="ziggy" aria-hidden="true"><img class="ziggy-open" src="/static/ziggy-peek.png" alt=""><img class="ziggy-blink" src="/static/ziggy-blink.png" alt=""></div><div class="qr-frame"><img class="qr-code" src="{{.ImageURL}}" alt="Scan to open the event form"></div></div></div></main></body></html>`
 
 func (s *server) qrPage(w http.ResponseWriter, r *http.Request) {
 	event, err := s.getEvent(r)
@@ -692,7 +766,7 @@ func (s *server) qrPage(w http.ResponseWriter, r *http.Request) {
 		banner = "Scan to stay in touch."
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = qrTemplate.Execute(w, struct {
+	_ = s.qrDisplay.Execute(w, struct {
 		Name, Banner, ImageURL string
 		AllowMotion            bool
 	}{event.Name, banner, "/admin/events/" + event.ID + "/qr.png", r.URL.Query().Get("motion") == "on"})

@@ -259,10 +259,12 @@ the configured catalog verifier, which validates the session. The app requires
 its `204` response with a subject and an exact `temporal.io` email domain; the
 catalog's bootstrap identity is not accepted. No signing key is shared with this
 app. Identity headers supplied by visitors and participant-entered emails cannot
-grant admin access. Verification runs on every protected request with a
-three-second timeout and no redirect following. A verifier outage blocks admin
-access with `503`; public forms and submissions do not call the verifier, except
-on internal-only events, where an outage blocks the form the same way. The
+grant admin access. A session is verified with a three-second timeout and no
+redirect following, and the result is reused for 30 seconds, so a page and the
+API calls it makes ask the catalog once. A session the catalog revokes keeps
+working for up to those 30 seconds. A verifier outage blocks admin access with
+`503`; public forms and submissions do not call the verifier, except on
+internal-only events, where an outage blocks the form the same way. The
 employee's name comes from the verifier's optional `X-Temporal-Auth-Name`
 header, decoded as Latin-1 when it is not UTF-8, as the catalog sends it. Admin
 mutations, and submissions to internal-only events, require same-origin JSON requests. Public event URLs always show the
@@ -272,6 +274,15 @@ For a different catalog deployment, set both `AUTH_BASE_URL` and `AUTH_VERIFY_UR
 to its login origin and verifier endpoint.
 
 `GET /healthz` checks the HTTP process. `GET /readyz` checks its Temporal connection and the table.
+
+Pages load in one round trip. Each page's HTML carries the responses to the API
+reads it would make first (`data-bootstrap` on `<main>`), and the app uses each
+once; later reads, such as **Refresh**, fetch as usual. Static files are served at
+URLs that carry a hash of their content (`/static/app.js?v=…`), cached by
+browsers for a year, and gzipped, as are pages and API responses. Every response
+has a `Server-Timing` header with the time spent on the catalog (`auth`),
+DynamoDB (`store`), and Temporal (`temporal`), which browser developer tools show
+per request.
 The worker logs to stdout and shuts down gracefully on SIGINT/SIGTERM.
 
 ## tmprl-demo.cloud deployment

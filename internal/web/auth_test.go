@@ -196,7 +196,7 @@ func TestPublicFormsAndMissingSessionsDoNotCallVerifier(t *testing.T) {
 		calls++
 		return nil, errors.New("catalog unavailable")
 	}))
-	for _, path := range []string{"/", "/demo", "/events/demo", "/api/events/demo", "/healthz"} {
+	for _, path := range []string{"/demo", "/events/demo", "/api/events/demo", "/healthz"} {
 		w := request(t, h, "GET", path, "", validSession, "")
 		if w.Code != 200 {
 			t.Errorf("%s: %d %s", path, w.Code, w.Body.String())
@@ -224,21 +224,50 @@ func TestPublicFormsAndMissingSessionsDoNotCallVerifier(t *testing.T) {
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"authenticated":false`) || calls != 0 {
 		t.Fatalf("anonymous session = %d %s, verifier calls=%d", w.Code, w.Body.String(), calls)
 	}
+	// The home page checks a session to show the right links; without the
+	// catalog it still renders, and the app reports the outage itself.
+	if w := request(t, h, "GET", "/", "", validSession, ""); w.Code != 200 || strings.Contains(w.Body.String(), "authenticated") {
+		t.Fatalf("home = %d", w.Code)
+	}
 }
 
-func TestProtectedRequestsAreVerifiedEveryTime(t *testing.T) {
+func TestAVerifiedSessionIsReusedBriefly(t *testing.T) {
 	calls := 0
 	h := testHandlerWithVerifier(t, &fakeGateway{}, verifierTransport(func(*http.Request) (*http.Response, error) {
 		calls++
-		if calls == 1 {
-			return verifierResponse(204, "google:employee-id", "employee@temporal.io"), nil
-		}
-		return verifierResponse(401, "", ""), nil
+		return verifierResponse(204, "google:employee-id", "employee@temporal.io"), nil
 	}))
-	first := request(t, h, "GET", "/api/admin/events", "", validSession, "")
-	second := request(t, h, "GET", "/api/admin/events", "", validSession, "")
-	if first.Code != 200 || second.Code != 401 || calls != 2 {
-		t.Fatalf("cached authentication: first=%d second=%d calls=%d", first.Code, second.Code, calls)
+	// A page and the API calls it makes check the session with the catalog once.
+	for range 3 {
+		if w := request(t, h, "GET", "/api/admin/events", "", validSession, ""); w.Code != 200 {
+			t.Fatal(w.Code)
+		}
+	}
+	if w := request(t, h, "GET", "/admin", "", validSession, ""); w.Code != 200 || calls != 1 {
+		t.Fatalf("status=%d verifier calls=%d", w.Code, calls)
+	}
+}
+
+func TestSessionCacheExpiresAndStaysBounded(t *testing.T) {
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	cache := newSessionCache()
+	cache.now = func() time.Time { return now }
+	cache.put("cookie", identity{Email: "zoe@temporal.io"})
+	if got, ok := cache.get("cookie"); !ok || got.Email != "zoe@temporal.io" {
+		t.Fatalf("fresh session = %+v %v", got, ok)
+	}
+	if _, ok := cache.get("other"); ok {
+		t.Fatal("an unknown cookie was found")
+	}
+	now = now.Add(sessionTTL)
+	if _, ok := cache.get("cookie"); ok {
+		t.Fatal("an expired session was trusted")
+	}
+	for i := range maxSessions + 5 {
+		cache.put(fmt.Sprint(i), identity{})
+	}
+	if len(cache.entries) > maxSessions {
+		t.Fatalf("cache holds %d sessions", len(cache.entries))
 	}
 }
 
