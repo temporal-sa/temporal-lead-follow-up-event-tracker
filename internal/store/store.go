@@ -14,7 +14,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -47,10 +46,6 @@ const (
 	participantSKP = "P#"
 	receiptSKP     = "R#"
 )
-
-// ErrArchiveNewer means the table already holds a later version of an event than
-// the one being imported, so the import would lose data.
-var ErrArchiveNewer = errors.New("the archive holds a newer version of this event; the backfill must not run after the cut-over")
 
 type Table struct {
 	client *dynamodb.Client
@@ -124,7 +119,7 @@ func linkPK(slug string) string { return "LINK#" + slug }
 func sortTime(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000000000Z") }
 
 func newEventItem(event tracker.Event, sequence, epoch int64, now time.Time) eventItem {
-	event.Status, event.Busy, event.Shards = "", false, nil
+	event.Status = ""
 	item := eventItem{
 		PK: eventPK(event.ID), SK: metaSK,
 		GSI1PK: directoryPK, GSI1SK: sortTime(event.CreatedAt) + "#" + event.ID,
@@ -158,170 +153,17 @@ func key(pk, sk string) map[string]types.AttributeValue {
 	}
 }
 
-func (t *Table) Import(ctx context.Context, snapshot tracker.Snapshot) (tracker.ImportResult, error) {
-	var result tracker.ImportResult
-	id := snapshot.Event.ID
-	// Links are claimed on every pass, so a conflict is reported each time it exists.
-	for _, slug := range snapshot.Links {
-		owned, err := t.claimLink(ctx, slug, id)
-		if err != nil {
-			return result, err
-		}
-		if !owned {
-			result.LinkConflicts = append(result.LinkConflicts, slug)
-		}
-	}
-	current, err := t.getEvent(ctx, id)
-	if err != nil && !errors.Is(err, tracker.ErrNotArchived) {
-		return result, err
-	}
-	if err == nil {
-		// A claimed event is owned by a workflow that writes here directly; the
-		// histories the backfill reads are older than what the table holds.
-		if current.Epoch > 0 || current.Revision > snapshot.Event.Revision {
-			return result, ErrArchiveNewer
-		}
-		if current.Revision == snapshot.Event.Revision {
-			result.Unchanged = true
-			return result, nil
-		}
-	}
-	writes := make([]any, 0, len(snapshot.Participants)+len(snapshot.Receipts))
-	for _, lead := range snapshot.Participants {
-		writes = append(writes, newParticipantItem(id, lead))
-	}
-	for _, receipt := range snapshot.Receipts {
-		writes = append(writes, receiptItem{PK: eventPK(id), SK: receiptSKP + receipt.ID, Receipt: receipt})
-	}
-	if err := t.putAll(ctx, writes); err != nil {
-		return result, err
-	}
-	// The event goes last: an import interrupted before it is redone in full next time.
-	item, err := marshal(newEventItem(snapshot.Event, snapshot.Sequence, 0, time.Now()))
-	if err != nil {
-		return result, err
-	}
-	_, err = t.client.PutItem(ctx, &dynamodb.PutItemInput{TableName: &t.name, Item: item})
-	return result, err
-}
-
-// claimLink records that slug routes to eventID unless another event owns it.
-func (t *Table) claimLink(ctx context.Context, slug, eventID string) (bool, error) {
-	item, err := marshal(linkItem{PK: linkPK(slug), SK: linkSK, EventID: eventID})
-	if err != nil {
-		return false, err
-	}
-	_, err = t.client.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: &t.name, Item: item,
-		ConditionExpression:       aws.String("attribute_not_exists(pk) OR eventId = :event"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{":event": &types.AttributeValueMemberS{Value: eventID}},
-	})
-	var failed *types.ConditionalCheckFailedException
-	if errors.As(err, &failed) {
-		return false, nil
-	}
-	return err == nil, err
-}
-
-// putAll writes items in batches, retrying what DynamoDB leaves unprocessed.
-func (t *Table) putAll(ctx context.Context, items []any) error {
-	for start := 0; start < len(items); start += 25 {
-		requests := make([]types.WriteRequest, 0, 25)
-		for _, item := range items[start:min(start+25, len(items))] {
-			values, err := marshal(item)
-			if err != nil {
-				return err
-			}
-			requests = append(requests, types.WriteRequest{PutRequest: &types.PutRequest{Item: values}})
-		}
-		delay := 50 * time.Millisecond
-		for attempt := 0; len(requests) > 0; attempt++ {
-			if attempt == 8 {
-				return errors.New("DynamoDB kept throttling a batch write")
-			}
-			if attempt > 0 {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(delay):
-				}
-				delay *= 2
-			}
-			output, err := t.client.BatchWriteItem(ctx, &dynamodb.BatchWriteItemInput{RequestItems: map[string][]types.WriteRequest{t.name: requests}})
-			if err != nil {
-				return err
-			}
-			requests = output.UnprocessedItems[t.name]
-		}
-	}
-	return nil
-}
-
 func (t *Table) getEvent(ctx context.Context, id string) (eventItem, error) {
 	output, err := t.client.GetItem(ctx, &dynamodb.GetItemInput{TableName: &t.name, Key: key(eventPK(id), metaSK), ConsistentRead: aws.Bool(true)})
 	if err != nil {
 		return eventItem{}, err
 	}
 	if output.Item == nil {
-		return eventItem{}, tracker.ErrNotArchived
+		return eventItem{}, tracker.ErrNotStored
 	}
 	var item eventItem
 	err = unmarshal(output.Item, &item)
 	return item, err
-}
-
-func (t *Table) Load(ctx context.Context, id string) (tracker.Snapshot, error) {
-	item, err := t.getEvent(ctx, id)
-	if err != nil {
-		return tracker.Snapshot{}, err
-	}
-	snapshot := tracker.Snapshot{Event: item.Event, Sequence: item.Sequence}
-	paginator := dynamodb.NewQueryPaginator(t.client, &dynamodb.QueryInput{
-		TableName: &t.name, ConsistentRead: aws.Bool(true),
-		KeyConditionExpression:    aws.String("pk = :pk"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": &types.AttributeValueMemberS{Value: eventPK(id)}},
-	})
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
-		if err != nil {
-			return tracker.Snapshot{}, err
-		}
-		for _, values := range page.Items {
-			sk, _ := values[attrSK].(*types.AttributeValueMemberS)
-			switch {
-			case sk == nil:
-				continue
-			case strings.HasPrefix(sk.Value, participantSKP):
-				var participant participantItem
-				if err := unmarshal(values, &participant); err != nil {
-					return tracker.Snapshot{}, err
-				}
-				snapshot.Participants = append(snapshot.Participants, participant.Lead)
-			case strings.HasPrefix(sk.Value, receiptSKP):
-				var receipt receiptItem
-				if err := unmarshal(values, &receipt); err != nil {
-					return tracker.Snapshot{}, err
-				}
-				snapshot.Receipts = append(snapshot.Receipts, receipt.Receipt)
-			}
-		}
-	}
-	for _, slug := range append([]string{id}, item.Aliases...) {
-		output, err := t.client.GetItem(ctx, &dynamodb.GetItemInput{TableName: &t.name, Key: key(linkPK(slug), linkSK), ConsistentRead: aws.Bool(true)})
-		if err != nil {
-			return tracker.Snapshot{}, err
-		}
-		var link linkItem
-		if output.Item != nil {
-			if err := unmarshal(output.Item, &link); err != nil {
-				return tracker.Snapshot{}, err
-			}
-		}
-		if link.EventID == id {
-			snapshot.Links = append(snapshot.Links, slug)
-		}
-	}
-	return snapshot, nil
 }
 
 // EnsureTable creates the table with its indexes if it doesn't exist. It is for
@@ -363,4 +205,4 @@ func (t *Table) EnsureTable(ctx context.Context) error {
 	return dynamodb.NewTableExistsWaiter(t.client).Wait(ctx, &dynamodb.DescribeTableInput{TableName: &t.name}, time.Minute)
 }
 
-var _ tracker.Archive = (*Table)(nil)
+var _ tracker.Store = (*Table)(nil)

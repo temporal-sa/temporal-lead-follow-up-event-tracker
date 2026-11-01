@@ -3,21 +3,18 @@ package web
 import (
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/temporal-sa/temporal-lead-follow-up-event-tracker/internal/tracker"
 	enums "go.temporal.io/api/enums/v1"
-	"go.temporal.io/api/serviceerror"
-	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
-	"golang.org/x/sync/errgroup"
 )
 
-// Gateway keeps HTTP concerns outside the durable event workflows.
+// Gateway keeps HTTP concerns outside the durable event workflows. Reads come
+// from the store; every change is an Update to the event's workflow, which
+// stores it.
 type Gateway interface {
 	Create(context.Context, tracker.Event) error
 	List(context.Context, string) ([]tracker.Event, string, error)
@@ -31,100 +28,81 @@ type Gateway interface {
 	InternalOnly(context.Context, string, tracker.Form) (tracker.Event, error)
 	Details(context.Context, string, tracker.EventDetails) (tracker.Event, error)
 	Slug(context.Context, string, string) (tracker.Event, error)
-	Page(context.Context, string, int, int) (tracker.ShardPage, error)
-	FindLead(context.Context, []string, string) (*tracker.Lead, error)
+	Participants(ctx context.Context, eventID, cursor string, limit int) ([]tracker.Lead, string, error)
+	Participant(ctx context.Context, eventID, email string) (*tracker.Lead, error)
 	Health(context.Context) error
 }
 
-type temporalGateway struct {
+type gateway struct {
+	store     tracker.Reader
 	client    client.Client
 	taskQueue string
-	namespace string
 }
 
-func NewTemporalGateway(c client.Client, taskQueue, namespace string) Gateway {
+func NewGateway(store tracker.Reader, c client.Client, taskQueue string) Gateway {
 	if taskQueue == "" {
 		taskQueue = tracker.DefaultTaskQueue
 	}
-	if namespace == "" {
-		namespace = "default"
-	}
-	return &temporalGateway{client: c, taskQueue: taskQueue, namespace: namespace}
+	return &gateway{store: store, client: c, taskQueue: taskQueue}
 }
 
-func (g *temporalGateway) Create(ctx context.Context, event tracker.Event) error {
-	_, err := g.client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+// Create starts the event's workflow with its create Update in one call. The
+// store reserves the ID; a taken one fails with a "Taken" error, and an ID whose
+// workflow is still running fails with WorkflowExecutionAlreadyStarted.
+func (g *gateway) Create(ctx context.Context, event tracker.Event) error {
+	// A fixed Update ID would match the running event's own create and report
+	// success instead of the conflict.
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return err
+	}
+	start := g.client.NewWithStartWorkflowOperation(client.StartWorkflowOptions{
 		ID: tracker.EventID(event.ID), TaskQueue: g.taskQueue,
-		WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
-		// Without this, a taken slug returns the existing event's run instead of an error.
-		WorkflowExecutionErrorWhenAlreadyStarted: true,
-	}, tracker.EventType, tracker.EventState{Event: event})
-	return err
-}
-
-func (g *temporalGateway) List(ctx context.Context, cursor string) ([]tracker.Event, string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	token, err := base64.RawURLEncoding.DecodeString(cursor)
-	if err != nil {
-		return nil, "", errInvalidCursor
-	}
-	result, err := g.client.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
-		PageSize: 25, NextPageToken: token,
-		Query: "WorkflowType = 'EventWorkflow' AND ExecutionStatus IN ('Running', 'Completed')",
+		WorkflowIDConflictPolicy: enums.WORKFLOW_ID_CONFLICT_POLICY_FAIL,
+		WorkflowIDReusePolicy:    enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE,
+	}, tracker.EventType, tracker.EventInput{ID: event.ID})
+	handle, err := g.client.UpdateWithStartWorkflow(ctx, client.UpdateWithStartWorkflowOptions{
+		StartWorkflowOperation: start,
+		UpdateOptions: client.UpdateWorkflowOptions{
+			UpdateName: "create", UpdateID: "create-" + hex.EncodeToString(token[:]), Args: []any{event},
+			WaitForStage: client.WorkflowUpdateStageCompleted,
+		},
 	})
 	if err != nil {
-		return nil, "", err
+		return err
 	}
-	// Each event is a separate query round trip, so the page runs them together.
-	// The page size bounds how many run at once.
-	found := make([]*tracker.Event, len(result.Executions))
-	group, groupCtx := errgroup.WithContext(ctx)
-	for i, execution := range result.Executions {
-		if execution.Status != enums.WORKFLOW_EXECUTION_STATUS_RUNNING && execution.Status != enums.WORKFLOW_EXECUTION_STATUS_COMPLETED {
-			continue
-		}
-		id := strings.TrimPrefix(execution.GetExecution().GetWorkflowId(), "event/")
-		group.Go(func() error {
-			event, err := g.Event(groupCtx, id)
-			var missing *serviceerror.NotFound
-			if errors.As(err, &missing) || errors.Is(err, errDeleted) {
-				return nil
-			}
-			if err != nil {
-				return err
-			}
-			found[i] = &event
-			return nil
-		})
-	}
-	if err := group.Wait(); err != nil {
-		return nil, "", err
-	}
-	events := make([]tracker.Event, 0, len(found))
-	for _, event := range found {
-		if event != nil {
-			events = append(events, *event)
-		}
-	}
-	return events, base64.RawURLEncoding.EncodeToString(result.NextPageToken), nil
+	return handle.Get(ctx, nil)
 }
 
-func (g *temporalGateway) Event(ctx context.Context, id string) (tracker.Event, error) {
+func (g *gateway) List(ctx context.Context, cursor string) ([]tracker.Event, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	events, next, err := g.store.Events(ctx, cursor)
+	if errors.Is(err, tracker.ErrInvalidCursor) {
+		return nil, "", errInvalidCursor
+	}
+	now := time.Now()
+	for i := range events {
+		events[i] = events[i].At(now)
+	}
+	return events, next, err
+}
+
+// Event resolves any of an event's links, with its status as of now.
+func (g *gateway) Event(ctx context.Context, slug string) (tracker.Event, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	// Queries do not advance workflow time, so LoadEvent derives display status at request time.
-	event, err := tracker.LoadEvent(ctx, g.client, id)
+	event, err := g.store.Resolve(ctx, slug)
 	if err != nil {
-		return event, err
+		return tracker.Event{}, err
 	}
 	if event.DeletedAt != nil {
 		return tracker.Event{}, errDeleted
 	}
-	return event, nil
+	return event.At(time.Now()), nil
 }
 
-func (g *temporalGateway) Submit(ctx context.Context, id string, submission tracker.Submission) error {
+func (g *gateway) Submit(ctx context.Context, id string, submission tracker.Submission) error {
 	handle, err := g.client.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
 		WorkflowID: tracker.EventID(id), UpdateID: submission.RequestID + "-" + submission.Digest(),
 		UpdateName: "submit", Args: []any{submission}, WaitForStage: client.WorkflowUpdateStageCompleted,
@@ -136,34 +114,31 @@ func (g *temporalGateway) Submit(ctx context.Context, id string, submission trac
 	return handle.Get(ctx, &status)
 }
 
-func (g *temporalGateway) Delete(ctx context.Context, id string) error {
-	// Resolve an alias first, and keep deleted events: deleting twice is not an error.
-	event, err := tracker.LoadEvent(ctx, g.client, id)
+// Delete records the deletion through the event's workflow. A completed event
+// gets a new run that loads it, records the deletion, and completes again.
+func (g *gateway) Delete(ctx context.Context, slug string) error {
+	event, err := g.store.Resolve(ctx, slug)
+	if err != nil || event.DeletedAt != nil {
+		return err
+	}
+	start := g.client.NewWithStartWorkflowOperation(client.StartWorkflowOptions{
+		ID: tracker.EventID(event.ID), TaskQueue: g.taskQueue,
+		WorkflowIDConflictPolicy: enums.WORKFLOW_ID_CONFLICT_POLICY_USE_EXISTING,
+		WorkflowIDReusePolicy:    enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE,
+	}, tracker.EventType, tracker.EventInput{ID: event.ID, Hydrate: true})
+	handle, err := g.client.UpdateWithStartWorkflow(ctx, client.UpdateWithStartWorkflowOptions{
+		StartWorkflowOperation: start,
+		UpdateOptions: client.UpdateWorkflowOptions{
+			UpdateName: "delete", UpdateID: "delete-event", WaitForStage: client.WorkflowUpdateStageCompleted,
+		},
+	})
 	if err != nil {
 		return err
 	}
-	described, err := g.client.DescribeWorkflowExecution(ctx, tracker.EventID(event.ID), "")
-	if err != nil {
-		return err
-	}
-	// A running event can record the deletion. A closed one cannot accept an update,
-	// and the directory includes completed workflows, so remove that execution.
-	if described.GetWorkflowExecutionInfo().GetStatus() == enums.WORKFLOW_EXECUTION_STATUS_RUNNING {
-		handle, err := g.client.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
-			WorkflowID: tracker.EventID(event.ID), UpdateID: "delete-event", UpdateName: "delete",
-			WaitForStage: client.WorkflowUpdateStageCompleted,
-		})
-		if err != nil {
-			return err
-		}
-		return handle.Get(ctx, &event)
-	}
-	// Removing a closed event's histories would leave it in the archive the
-	// storage cut-over is copying them to, so it would come back afterwards.
-	return errClosedDelete
+	return handle.Get(ctx, nil)
 }
 
-func (g *temporalGateway) End(ctx context.Context, id string) (tracker.Event, error) {
+func (g *gateway) End(ctx context.Context, id string) (tracker.Event, error) {
 	var event tracker.Event
 	handle, err := g.client.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
 		WorkflowID: tracker.EventID(id), UpdateID: "end-event", UpdateName: "end",
@@ -176,33 +151,33 @@ func (g *temporalGateway) End(ctx context.Context, id string) (tracker.Event, er
 	return event, err
 }
 
-func (g *temporalGateway) Banner(ctx context.Context, id, banner string) (tracker.Event, error) {
+func (g *gateway) Banner(ctx context.Context, id, banner string) (tracker.Event, error) {
 	return g.edit(ctx, id, "banner", banner)
 }
 
-func (g *temporalGateway) Preview(ctx context.Context, id string, preview tracker.LinkPreview) (tracker.Event, error) {
+func (g *gateway) Preview(ctx context.Context, id string, preview tracker.LinkPreview) (tracker.Event, error) {
 	return g.edit(ctx, id, "preview", preview)
 }
 
-func (g *temporalGateway) Form(ctx context.Context, id string, form tracker.Form) (tracker.Event, error) {
+func (g *gateway) Form(ctx context.Context, id string, form tracker.Form) (tracker.Event, error) {
 	return g.edit(ctx, id, "form", form)
 }
 
-func (g *temporalGateway) InternalOnly(ctx context.Context, id string, form tracker.Form) (tracker.Event, error) {
+func (g *gateway) InternalOnly(ctx context.Context, id string, form tracker.Form) (tracker.Event, error) {
 	return g.edit(ctx, id, "internalOnly", form)
 }
 
-func (g *temporalGateway) Details(ctx context.Context, id string, details tracker.EventDetails) (tracker.Event, error) {
+func (g *gateway) Details(ctx context.Context, id string, details tracker.EventDetails) (tracker.Event, error) {
 	return g.edit(ctx, id, "details", details)
 }
 
-func (g *temporalGateway) Slug(ctx context.Context, id, slug string) (tracker.Event, error) {
+func (g *gateway) Slug(ctx context.Context, id, slug string) (tracker.Event, error) {
 	return g.edit(ctx, id, "slug", slug)
 }
 
 // edit runs an employee's change as an Update. Each request gets a fresh Update
 // ID, so changing a value back to an earlier one is a new change.
-func (g *temporalGateway) edit(ctx context.Context, id, update string, value any) (tracker.Event, error) {
+func (g *gateway) edit(ctx context.Context, id, update string, value any) (tracker.Event, error) {
 	var event tracker.Event
 	var token [16]byte
 	if _, err := rand.Read(token[:]); err != nil {
@@ -219,36 +194,32 @@ func (g *temporalGateway) edit(ctx context.Context, id, update string, value any
 	return event, err
 }
 
-func (g *temporalGateway) Page(ctx context.Context, shardID string, offset, limit int) (tracker.ShardPage, error) {
+func (g *gateway) Participants(ctx context.Context, eventID, cursor string, limit int) ([]tracker.Lead, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	var page tracker.ShardPage
-	result, err := g.client.QueryWorkflow(ctx, shardID, "", "page", offset, limit)
-	if err != nil {
-		return page, err
+	leads, next, err := g.store.Participants(ctx, eventID, cursor, limit)
+	if errors.Is(err, tracker.ErrInvalidCursor) {
+		return nil, "", errInvalidCursor
 	}
-	err = result.Get(&page)
-	return page, err
+	return leads, next, err
 }
 
-// FindLead returns the participant with email in any of the shards, or nil.
-func (g *temporalGateway) FindLead(ctx context.Context, shards []string, email string) (*tracker.Lead, error) {
+func (g *gateway) Participant(ctx context.Context, eventID, email string) (*tracker.Lead, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	_, lead, err := tracker.FindLead(ctx, g.client, shards, email)
-	return lead, err
+	return g.store.Participant(ctx, eventID, email)
 }
 
-func (g *temporalGateway) Health(ctx context.Context) error {
-	_, err := g.client.CheckHealth(ctx, nil)
-	return err
+func (g *gateway) Health(ctx context.Context) error {
+	if _, err := g.client.CheckHealth(ctx, nil); err != nil {
+		return err
+	}
+	return g.store.Health(ctx)
 }
 
 var (
 	errInvalidCursor = errors.New("invalid pagination cursor")
 	errChanged       = errors.New("participants changed; reload the list or retry the export")
-	errExpired       = errors.New("event participant data is no longer available in Temporal retention")
 	errDeleted       = errors.New("this event was deleted")
 	errPaused        = errors.New("Changes are paused for maintenance. Please retry in a few minutes.")
-	errClosedDelete  = errors.New("Ended events can't be deleted until the storage migration finishes.")
 )

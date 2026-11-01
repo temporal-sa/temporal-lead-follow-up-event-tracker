@@ -4,9 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -38,8 +36,8 @@ func run() error {
 	if len(os.Args) > 1 {
 		mode = os.Args[1]
 	}
-	if mode != "serve" && mode != "worker" && mode != "dev" && mode != "backfill" {
-		return errors.New("usage: tracker [serve|worker|dev|backfill [--verify-only]]")
+	if mode != "serve" && mode != "worker" && mode != "dev" {
+		return errors.New("usage: tracker [serve|worker|dev]")
 	}
 	writesPaused, err := strconv.ParseBool(env("WRITES_PAUSED", "false"))
 	if err != nil {
@@ -59,23 +57,19 @@ func run() error {
 	}
 	defer c.Close()
 	taskQueue := env("TEMPORAL_TASK_QUEUE", tracker.DefaultTaskQueue)
-	if mode == "backfill" {
-		return backfill(ctx, c, taskQueue, os.Args[2:])
+	events, err := store.Open(ctx, store.Config{Table: os.Getenv("EVENT_LEADS_TABLE"), Endpoint: os.Getenv("DYNAMODB_ENDPOINT")})
+	if err != nil {
+		return err
+	}
+	if os.Getenv("DYNAMODB_ENDPOINT") != "" {
+		if err := events.EnsureTable(ctx); err != nil {
+			return fmt.Errorf("create the local DynamoDB table: %w", err)
+		}
 	}
 	if mode == "worker" || mode == "dev" {
-		archive, err := store.Open(ctx, store.Config{Table: os.Getenv("EVENT_LEADS_TABLE"), Endpoint: os.Getenv("DYNAMODB_ENDPOINT")})
-		if err != nil {
-			return err
-		}
-		if os.Getenv("DYNAMODB_ENDPOINT") != "" {
-			if err := archive.EnsureTable(ctx); err != nil {
-				return fmt.Errorf("create the local DynamoDB table: %w", err)
-			}
-		}
 		if writesPaused {
 			tracker.PauseWrites()
 		}
-		// The employee event list queries a page of events at once, and each query is a workflow task.
 		options := worker.Options{WorkflowTaskPollerBehavior: worker.NewPollerBehaviorAutoscaling(worker.PollerBehaviorAutoscalingOptions{InitialNumberOfPollers: 10, MinimumNumberOfPollers: 10})}
 		deployment, build := os.Getenv("TEMPORAL_DEPLOYMENT_NAME"), os.Getenv("TEMPORAL_WORKER_BUILD_ID")
 		if deployment != "" || build != "" {
@@ -86,16 +80,23 @@ func run() error {
 		}
 		w := worker.New(c, taskQueue, options)
 		w.RegisterWorkflow(tracker.EventWorkflow)
-		w.RegisterWorkflow(tracker.ParticipantShardWorkflow)
-		w.RegisterWorkflow(tracker.EventAliasWorkflow)
 		w.RegisterWorkflow(tracker.FlightPassWorkflow)
-		w.RegisterWorkflow(tracker.BackfillWorkflow)
-		w.RegisterActivity(&tracker.Activities{Client: c, Archive: archive})
-		tracker.Service{Client: c, TaskQueue: taskQueue}.Register(w)
+		w.RegisterWorkflow(tracker.ReconcileWorkflow)
+		w.RegisterActivity(&tracker.Activities{Client: c, Store: events, TaskQueue: taskQueue})
+		tracker.Service{Client: c, TaskQueue: taskQueue, Store: events}.Register(w)
 		if err := w.Start(); err != nil {
 			return err
 		}
 		defer w.Stop()
+		// The reconciler restarts open events from the store, such as after a
+		// namespace reset. Every worker ensures it runs; only one ever does.
+		if _, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+			ID: tracker.ReconcilerWorkflowID, TaskQueue: taskQueue,
+			WorkflowIDConflictPolicy: enums.WORKFLOW_ID_CONFLICT_POLICY_USE_EXISTING,
+			WorkflowIDReusePolicy:    enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE,
+		}, tracker.ReconcileWorkflow); err != nil {
+			return fmt.Errorf("start the reconciler: %w", err)
+		}
 		slog.Info("worker started", "taskQueue", taskQueue, "deployment", deployment, "build", build, "writesPaused", writesPaused)
 	}
 	if mode == "worker" {
@@ -116,7 +117,7 @@ func run() error {
 		AuthVerifyURL: env("AUTH_VERIFY_URL", "https://catalog.tmprl-demo.cloud/_auth/verify"),
 		DevAuthEmail:  devEmail,
 		WritesPaused:  writesPaused,
-	}, web.NewTemporalGateway(c, taskQueue, options.Namespace))
+	}, web.NewGateway(events, c, taskQueue))
 	if err != nil {
 		return err
 	}
@@ -135,39 +136,6 @@ func run() error {
 		defer cancel()
 		return server.Shutdown(shutdownCtx)
 	}
-}
-
-// backfill copies every event into the archive, or with --verify-only checks the
-// archive against the workflows, and prints the report. A worker with the archive
-// configured runs it.
-func backfill(ctx context.Context, c client.Client, taskQueue string, args []string) error {
-	flags := flag.NewFlagSet("backfill", flag.ContinueOnError)
-	verifyOnly := flags.Bool("verify-only", false, "compare the archive with the workflows without writing")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	run, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
-		ID: tracker.BackfillWorkflowID, TaskQueue: taskQueue,
-		WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE,
-		// Fail rather than attach: a run already going may be in the other mode.
-		WorkflowExecutionErrorWhenAlreadyStarted: true,
-	}, tracker.BackfillWorkflow, tracker.BackfillInput{VerifyOnly: *verifyOnly})
-	if err != nil {
-		return fmt.Errorf("start the backfill: %w", err)
-	}
-	var report tracker.BackfillReport
-	if err := run.Get(ctx, &report); err != nil {
-		return fmt.Errorf("backfill %s failed: %w", run.GetRunID(), err)
-	}
-	encoder := json.NewEncoder(os.Stdout)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(report); err != nil {
-		return err
-	}
-	if len(report.Problems) > 0 {
-		return fmt.Errorf("%d events failed or don't match the archive", len(report.Problems))
-	}
-	return nil
 }
 
 func temporalOptions() (client.Options, error) {

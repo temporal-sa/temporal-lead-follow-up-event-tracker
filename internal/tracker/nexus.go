@@ -2,7 +2,6 @@ package tracker
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"strings"
 	"time"
@@ -10,7 +9,6 @@ import (
 	"github.com/nexus-rpc/sdk-go/nexus"
 	enums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
-	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
@@ -29,6 +27,7 @@ const (
 type Service struct {
 	Client    client.Client
 	TaskQueue string
+	Store     Reader
 }
 
 func (s Service) Register(w worker.Worker) {
@@ -95,36 +94,17 @@ type ClaimFlightPassInput struct {
 func (s Service) listEvents(ctx context.Context, input ListEventsInput, _ nexus.StartOperationOptions) (ListEventsResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	token, err := base64.RawURLEncoding.DecodeString(input.Cursor)
-	if err != nil {
-		return ListEventsResult{}, nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "invalid cursor")
-	}
-	result, err := s.Client.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
-		PageSize: 25, NextPageToken: token,
-		Query: "WorkflowType = 'EventWorkflow' AND ExecutionStatus = 'Running'",
-	})
+	stored, next, err := s.Store.OpenEvents(ctx, input.Cursor)
 	if err != nil {
 		return ListEventsResult{}, nexusError(err)
 	}
-	events := make([]PublicEvent, 0, len(result.Executions))
-	for _, execution := range result.Executions {
-		id := strings.TrimPrefix(execution.GetExecution().GetWorkflowId(), "event/")
-		event, err := s.event(ctx, id)
-		var missing *serviceerror.NotFound
-		if errors.As(err, &missing) {
-			continue
+	now := time.Now()
+	events := make([]PublicEvent, 0, len(stored))
+	for _, event := range stored {
+		// Open events still need their workflow after submissions close; only list those taking responses.
+		if event = event.At(now); event.Status == "open" {
+			events = append(events, publicEvent(event))
 		}
-		if err != nil {
-			return ListEventsResult{}, nexusError(err)
-		}
-		if event.Status != "open" {
-			continue
-		}
-		events = append(events, publicEvent(event))
-	}
-	next := ""
-	if len(result.NextPageToken) > 0 {
-		next = base64.RawURLEncoding.EncodeToString(result.NextPageToken)
 	}
 	return ListEventsResult{Events: events, NextCursor: next}, nil
 }
@@ -177,7 +157,7 @@ func (s Service) lookupParticipant(ctx context.Context, input LookupParticipantI
 		return LookupParticipantResult{}, nexusError(err)
 	}
 	email := strings.ToLower(strings.TrimSpace(input.Email))
-	_, lead, err := FindLead(ctx, s.Client, event.Shards, email)
+	lead, err := s.Store.Participant(ctx, event.ID, email)
 	if err != nil {
 		return LookupParticipantResult{}, nexusError(err)
 	}
@@ -198,45 +178,16 @@ func (s Service) claimFlightPass(ctx context.Context, input ClaimFlightPassInput
 	return ClaimFlightPass(ctx, s.Client, input.EventID, code)
 }
 
-func (s Service) event(ctx context.Context, id string) (Event, error) {
-	event, err := LoadEvent(ctx, s.Client, id)
+// event resolves any of an event's links, with its status as of now.
+func (s Service) event(ctx context.Context, slug string) (Event, error) {
+	event, err := s.Store.Resolve(ctx, slug)
 	if err != nil {
 		return Event{}, err
 	}
 	if event.DeletedAt != nil {
-		return Event{}, serviceerror.NewNotFound("event deleted")
-	}
-	return event, nil
-}
-
-// LoadEvent reads an event through any of its slugs, with its status as of now.
-// Callers decide what a deleted event means to them.
-func LoadEvent(ctx context.Context, c client.Client, slug string) (Event, error) {
-	event, err := queryEvent(ctx, c, slug)
-	if err != nil {
-		return Event{}, err
-	}
-	if event.ID != slug {
-		target := event.ID
-		if event, err = queryEvent(ctx, c, target); err != nil {
-			return Event{}, err
-		}
-		// Reachable only if the alias outlived its event and the event's slug was reused.
-		if event.ID != target {
-			return Event{}, serviceerror.NewNotFound("event alias no longer points to an event")
-		}
+		return Event{}, ErrNotStored
 	}
 	return event.At(time.Now()), nil
-}
-
-func queryEvent(ctx context.Context, c client.Client, slug string) (Event, error) {
-	var event Event
-	result, err := c.QueryWorkflow(ctx, EventID(slug), "", "event")
-	if err != nil {
-		return Event{}, err
-	}
-	err = result.Get(&event)
-	return event, err
 }
 
 func (s Service) queue() string {
@@ -251,8 +202,11 @@ func nexusError(err error) error {
 		return nil
 	}
 	var missing *serviceerror.NotFound
-	if errors.As(err, &missing) {
+	if errors.Is(err, ErrNotStored) || errors.As(err, &missing) {
 		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeNotFound, "not found")
+	}
+	if errors.Is(err, ErrInvalidCursor) {
+		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "invalid cursor")
 	}
 	var app *temporal.ApplicationError
 	if errors.As(err, &app) {

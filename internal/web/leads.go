@@ -14,14 +14,14 @@ import (
 	"unicode"
 
 	"github.com/temporal-sa/temporal-lead-follow-up-event-tracker/internal/tracker"
-	"go.temporal.io/api/serviceerror"
 )
 
+// A participant cursor carries the store's position and the event revision the
+// first page was read at, so pages from different versions are never mixed.
 type leadCursor struct {
 	EventID  string `json:"event"`
 	Revision int64  `json:"revision"`
-	Shard    int    `json:"shard"`
-	Offset   int    `json:"offset"`
+	Key      string `json:"key"`
 }
 
 func decodeLeadCursor(value string, event tracker.Event) (leadCursor, error) {
@@ -29,14 +29,14 @@ func decodeLeadCursor(value string, event tracker.Event) (leadCursor, error) {
 	if value == "" {
 		return cursor, nil
 	}
-	if len(value) > 2048 {
+	if len(value) > 8192 {
 		return cursor, errInvalidCursor
 	}
 	data, err := base64.RawURLEncoding.DecodeString(value)
 	if err != nil {
 		return cursor, errInvalidCursor
 	}
-	if json.Unmarshal(data, &cursor) != nil || cursor.EventID != event.ID || cursor.Shard < 0 || cursor.Shard >= len(event.Shards) || cursor.Offset < 0 || cursor.Offset > tracker.MaxParticipants {
+	if json.Unmarshal(data, &cursor) != nil || cursor.EventID != event.ID || cursor.Key == "" {
 		return cursor, errInvalidCursor
 	}
 	if cursor.Revision != event.Revision {
@@ -50,16 +50,17 @@ func encodeLeadCursor(cursor leadCursor) string {
 	return base64.RawURLEncoding.EncodeToString(data)
 }
 
-func (s *server) page(ctx context.Context, shard string, offset, limit int) (tracker.ShardPage, error) {
-	page, err := s.gateway.Page(ctx, shard, offset, limit)
-	var missing *serviceerror.NotFound
-	if errors.As(err, &missing) {
-		return page, errExpired
+// unchanged confirms that the event has the revision and count it had before a
+// read, so the participants read in between belong to that version.
+func (s *server) unchanged(ctx context.Context, event tracker.Event) error {
+	confirmed, err := s.visibleEvent(ctx, event.ID)
+	if err != nil {
+		return err
 	}
-	if err == nil && (page.Total < offset || page.Total > tracker.MaxParticipants || len(page.Leads) > limit || len(page.Leads) > page.Total-offset || (len(page.Leads) == 0 && offset < page.Total)) {
-		return page, errChanged
+	if confirmed.Revision != event.Revision || confirmed.Count != event.Count {
+		return errChanged
 	}
-	return page, err
+	return nil
 }
 
 func (s *server) participants(w http.ResponseWriter, r *http.Request) {
@@ -68,46 +69,29 @@ func (s *server) participants(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	if event.Busy {
-		handleError(w, errChanged)
-		return
-	}
 	cursor, err := decodeLeadCursor(r.URL.Query().Get("cursor"), event)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-	leads := make([]tracker.Lead, 0, tracker.PageSize)
-	for cursor.Shard < len(event.Shards) && len(leads) < tracker.PageSize {
-		page, err := s.page(r.Context(), event.Shards[cursor.Shard], cursor.Offset, tracker.PageSize-len(leads))
-		if err != nil {
-			handleError(w, err)
-			return
-		}
-		leads = append(leads, page.Leads...)
-		cursor.Offset += len(page.Leads)
-		if cursor.Offset == page.Total {
-			cursor.Shard++
-			cursor.Offset = 0
-		}
-	}
-	confirmed, err := s.visibleEvent(r.Context(), event.ID)
+	leads, next, err := s.gateway.Participants(r.Context(), event.ID, cursor.Key, tracker.PageSize)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-	if confirmed.Busy || confirmed.Revision != event.Revision || confirmed.Count != event.Count {
-		handleError(w, errChanged)
+	if err := s.unchanged(r.Context(), event); err != nil {
+		handleError(w, err)
 		return
 	}
-	next := ""
-	if cursor.Shard < len(event.Shards) {
-		next = encodeLeadCursor(cursor)
+	nextCursor := ""
+	if next != "" {
+		cursor.Key = next
+		nextCursor = encodeLeadCursor(cursor)
 	}
 	writeJSON(w, http.StatusOK, struct {
 		Leads      []tracker.Lead `json:"leads"`
 		NextCursor string         `json:"nextCursor"`
-	}{leads, next})
+	}{leads, nextCursor})
 }
 
 func (s *server) export(w http.ResponseWriter, r *http.Request) {
@@ -137,9 +121,6 @@ func (s *server) csvSnapshot(ctx context.Context, id string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if event.Busy {
-		return nil, errChanged
-	}
 	var buffer bytes.Buffer
 	writer := csv.NewWriter(&buffer)
 	columns := formCSVColumns(event)
@@ -156,46 +137,38 @@ func (s *server) csvSnapshot(ctx context.Context, id string) ([]byte, error) {
 		return nil, err
 	}
 	count := 0
-	emails := make(map[string]struct{}, event.Count)
-	for _, shard := range event.Shards {
-		for offset := 0; ; {
-			page, err := s.page(ctx, shard, offset, tracker.PageSize)
-			if err != nil {
+	for cursor := ""; ; {
+		leads, next, err := s.gateway.Participants(ctx, event.ID, cursor, tracker.PageSize)
+		if err != nil {
+			return nil, err
+		}
+		for _, lead := range leads {
+			row := []string{event.ID, event.Name, event.EndDate}
+			if event.Form == nil {
+				row = append(row, lead.Name, lead.Role, lead.Email, lead.Reason)
+			} else {
+				for _, column := range columns {
+					row = append(row, column.value(lead))
+				}
+			}
+			row = append(row, lead.FirstSubmittedAt.UTC().Format(time.RFC3339Nano), lead.LastSubmittedAt.UTC().Format(time.RFC3339Nano))
+			for i := range row {
+				row[i] = safeCSVCell(row[i])
+			}
+			if err := writer.Write(row); err != nil {
 				return nil, err
 			}
-			for _, lead := range page.Leads {
-				if _, exists := emails[lead.Email]; exists {
-					return nil, errChanged
-				}
-				emails[lead.Email] = struct{}{}
-				row := []string{event.ID, event.Name, event.EndDate}
-				if event.Form == nil {
-					row = append(row, lead.Name, lead.Role, lead.Email, lead.Reason)
-				} else {
-					for _, column := range columns {
-						row = append(row, column.value(lead))
-					}
-				}
-				row = append(row, lead.FirstSubmittedAt.UTC().Format(time.RFC3339Nano), lead.LastSubmittedAt.UTC().Format(time.RFC3339Nano))
-				for i := range row {
-					row[i] = safeCSVCell(row[i])
-				}
-				if err := writer.Write(row); err != nil {
-					return nil, err
-				}
-				count++
-			}
-			offset += len(page.Leads)
-			if offset == page.Total {
-				break
-			}
+			count++
 		}
+		if next == "" {
+			break
+		}
+		cursor = next
 	}
-	confirmed, err := s.visibleEvent(ctx, id)
-	if err != nil {
+	if err := s.unchanged(ctx, event); err != nil {
 		return nil, err
 	}
-	if confirmed.Busy || confirmed.Revision != event.Revision || confirmed.Count != event.Count || count != event.Count {
+	if count != event.Count {
 		return nil, errChanged
 	}
 	writer.Flush()

@@ -2,7 +2,6 @@ package tracker
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -39,69 +38,6 @@ func TestSubmissionNormalization(t *testing.T) {
 		if _, err := s.Normalize(); err == nil {
 			t.Errorf("accepted %q", email)
 		}
-	}
-}
-
-func TestShardCapacityAndRetry(t *testing.T) {
-	state := ShardState{EventID: "id", Leads: make([]Lead, MaxParticipants)}
-	for i := range state.Leads {
-		state.Leads[i] = Lead{Email: fmt.Sprintf("%d@x.co", i)}
-	}
-	result, err := state.Apply(WriteCommand{Lead: Lead{Email: "extra@x.co", Sequence: 1}})
-	if err != nil || !result.Full || len(state.Leads) != MaxParticipants {
-		t.Fatal("participant 5,001 must not be added")
-	}
-	state = ShardState{EventID: "id", Leads: []Lead{}}
-	newer := WriteCommand{Lead: Lead{Email: "p@example.com", Name: "New", Sequence: 2}}
-	if _, err := state.Apply(newer); err != nil {
-		t.Fatal(err)
-	}
-	_, _ = state.Apply(newer)
-	_, _ = state.Apply(WriteCommand{Lead: Lead{Email: "p@example.com", Name: "Old", Sequence: 1}})
-	if len(state.Leads) != 1 || state.Leads[0].Name != "New" {
-		t.Fatal("retry duplicated or overwrote newer lead")
-	}
-	_, _ = state.Apply(WriteCommand{Lead: Lead{Email: "p@example.com", Sequence: 3}, Delete: true})
-	_, _ = state.Apply(newer)
-	if len(state.Leads) != 0 {
-		t.Fatal("late attempt resurrected relocated lead")
-	}
-}
-
-func TestShardByteCapacityAndGrowingLead(t *testing.T) {
-	state := ShardState{EventID: "id", Leads: []Lead{}}
-	for i := 1; ; i++ {
-		result, err := state.Apply(WriteCommand{Lead: Lead{Email: fmt.Sprintf("%d@x.co", i), Reason: strings.Repeat("x", 1000), Sequence: int64(i)}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result.Full {
-			break
-		}
-		if i > MaxParticipants {
-			t.Fatal("byte guard never triggered")
-		}
-	}
-	data, _ := json.Marshal(state)
-	if len(data) > MaxShardBytes || len(state.Leads) >= MaxParticipants {
-		t.Fatal("byte guard must shard before count limit for long text")
-	}
-	state.Leads[0].Reason = ""
-	// Fill the released space, then grow that first participant beyond the budget.
-	seq := state.LastSequence + 1
-	for i := 0; ; i++ {
-		r, _ := state.Apply(WriteCommand{Lead: Lead{Email: fmt.Sprintf("fill%d@x.co", i), Reason: strings.Repeat("z", 100), Sequence: seq}})
-		if r.Full {
-			break
-		}
-		seq++
-	}
-	lead := state.Leads[0]
-	lead.Reason = strings.Repeat("y", 1000)
-	lead.Sequence = seq + 1
-	r, _ := state.Apply(WriteCommand{Lead: lead})
-	if !r.Full || state.Leads[0].Reason != "" {
-		t.Fatal("growing record must leave original intact until relocated")
 	}
 }
 

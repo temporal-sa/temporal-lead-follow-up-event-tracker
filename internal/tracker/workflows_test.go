@@ -4,1010 +4,432 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	enums "go.temporal.io/api/enums/v1"
+	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/mocks"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 )
 
 func testEvent() Event {
-	return Event{ID: "test", Name: "Test", EndDate: "2026-10-07", ClosesAt: time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC), CompletesAt: time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC), Shards: []string{}}
+	return Event{
+		ID: "test", Name: "Test", EndDate: "2026-10-07", CreatedAt: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+		ClosesAt: time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC), CompletesAt: time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC),
+		Form: func() *Form { f := DefaultForm(); return &f }(),
+	}
 }
 
-func TestEventCompletionTimerRejectsLateSubmissions(t *testing.T) {
+// harness runs an event workflow against an in-memory store, sending Updates at
+// one-second steps of workflow time.
+type harness struct {
+	t     *testing.T
+	env   *testsuite.TestWorkflowEnvironment
+	store *memStore
+	step  time.Duration
+	sent  int
+}
+
+func newHarness(t *testing.T) *harness {
 	suite := testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
-	event := testEvent()
-	env.SetStartTime(event.ClosesAt.Add(-time.Second))
-	var timers []time.Duration
-	env.SetOnTimerScheduledListener(func(_ string, duration time.Duration) { timers = append(timers, duration) })
-	checked := false
-	env.RegisterDelayedCallback(func() {
-		value, err := env.QueryWorkflow("event")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var e Event
-		if err := value.Get(&e); err != nil {
-			t.Fatal(err)
-		}
-		if e.Status != "ended" {
-			t.Errorf("status=%s", e.Status)
-		}
-		env.UpdateWorkflow("submit", "late", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
-			var app *temporal.ApplicationError
-			if !errors.As(err, &app) || app.Type() != "Closed" {
-				t.Errorf("late update error=%v", err)
-			}
-			checked = true
-		}}, Submission{Name: "Pat", Role: "Engineer", Email: "p@example.com", RequestID: "12345678-1234-1234"})
-	}, 2*time.Second)
-	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatal(err)
+	h := &harness{t: t, env: suite.NewTestWorkflowEnvironment(), store: newMemStore()}
+	h.env.RegisterActivity(&Activities{Store: h.store})
+	h.env.SetStartTime(testEvent().ClosesAt.Add(-time.Hour))
+	return h
+}
+
+// stored puts an event in the store, as if an earlier run had created it.
+func (h *harness) stored(event Event) {
+	h.store.events[event.ID] = EventState{Event: event, Epoch: 1}
+	h.store.links[event.ID] = event.ID
+}
+
+// then runs fn one step after the previous one.
+func (h *harness) then(fn func()) {
+	h.step += time.Second
+	h.env.RegisterDelayedCallback(fn, h.step)
+}
+
+type outcome struct {
+	done  bool
+	value any
+	err   error
+}
+
+func (h *harness) update(name string, args ...any) *outcome {
+	h.sent++
+	result := &outcome{}
+	h.env.UpdateWorkflow(name, fmt.Sprintf("%s-%d", name, h.sent), &testsuite.TestUpdateCallback{
+		OnAccept:   func() {},
+		OnReject:   func(err error) { result.done, result.err = true, err },
+		OnComplete: func(value any, err error) { result.done, result.value, result.err = true, value, err },
+	}, args...)
+	return result
+}
+
+func (h *harness) run(input EventInput) {
+	h.env.ExecuteWorkflow(EventWorkflow, input)
+	if err := h.env.GetWorkflowError(); err != nil {
+		h.t.Fatal(err)
 	}
-	if !checked {
-		t.Fatal("late update was not tested")
+}
+
+func errorType(err error) string {
+	var app *temporal.ApplicationError
+	if errors.As(err, &app) {
+		return app.Type()
+	}
+	return ""
+}
+
+func submission(email, request string) Submission {
+	return Submission{Name: "Pat", Role: "Engineer", Email: email, RequestID: request}
+}
+
+func TestCreateStoresTheEventAndRunsToCompletion(t *testing.T) {
+	h := newHarness(t)
+	var created *outcome
+	h.then(func() { created = h.update("create", testEvent()) })
+	h.run(EventInput{ID: "test"})
+	if created == nil || created.err != nil || created.value.(Event).Status != "open" {
+		t.Fatalf("create = %+v", created)
+	}
+	stored := h.store.stored("test")
+	if stored.Epoch != 1 || stored.Event.Name != "Test" || h.store.links["test"] != "test" {
+		t.Fatalf("stored = %+v", stored)
 	}
 	var result Event
-	if err := env.GetWorkflowResult(&result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Status != "archived" {
-		t.Fatal("event did not archive")
-	}
-	if !env.Now().Equal(event.CompletesAt) {
-		t.Fatalf("completion time=%v", env.Now())
-	}
-	if len(timers) != 1 || timers[0] != 7*24*time.Hour+time.Second {
-		t.Fatalf("expected only the completion timer, got %v", timers)
+	if err := h.env.GetWorkflowResult(&result); err != nil || result.Status != "archived" {
+		t.Fatalf("result = %+v, %v", result, err)
 	}
 }
 
-func TestManualEndKeepsScheduledCompletion(t *testing.T) {
-	suite := testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
-	event := testEvent()
-	env.SetStartTime(event.ClosesAt.Add(-24 * time.Hour))
-	ended := false
-	env.RegisterDelayedCallback(func() {
-		env.UpdateWorkflow("end", "end", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
-			if err != nil {
-				t.Error(err)
-			}
-			e := value.(Event)
-			if e.Status != "ended" || !e.CompletesAt.Equal(event.CompletesAt) {
-				t.Errorf("unexpected event: %+v", e)
-			}
-			ended = true
-		}})
-	}, time.Second)
-	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatal(err)
+func TestCreateOfATakenIDEndsTheRunWithoutWriting(t *testing.T) {
+	h := newHarness(t)
+	other := testEvent()
+	other.CreatedAt, other.Name = other.CreatedAt.Add(-time.Hour), "Other"
+	h.stored(other)
+	var created *outcome
+	h.then(func() { created = h.update("create", testEvent()) })
+	h.run(EventInput{ID: "test"})
+	if created == nil || errorType(created.err) != "Taken" {
+		t.Fatalf("create = %+v", created)
 	}
-	if !ended || !env.Now().Equal(event.CompletesAt) {
-		t.Fatal("manual end shortened the scheduled completion deadline")
+	if h.store.stored("test").Event.Name != "Other" {
+		t.Fatal("a taken create replaced the other event")
 	}
 }
 
-func TestCoordinatorRoutesDuplicateToOriginalShard(t *testing.T) {
-	suite := testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
-	event := testEvent()
-	event.Shards = []string{"original", "newest"}
-	event.Count = 5001
-	env.SetStartTime(event.ClosesAt.Add(-24 * time.Hour))
-	env.RegisterActivity(&Activities{})
-	first := env.Now().Add(-time.Hour)
-	env.OnActivity("LocateLead", mock.Anything, mock.Anything).Return(LocatedLead{ShardID: "original", Lead: &Lead{Email: "p@example.com", FirstSubmittedAt: first}}, nil)
-	env.OnActivity("WriteLead", mock.Anything, mock.Anything).Return(func(_ context.Context, c WriteCommand) (WriteResult, error) {
-		if c.ShardID != "original" || c.Lead.Reason != "Latest" || !c.Lead.FirstSubmittedAt.Equal(first) {
-			t.Errorf("bad routing: %+v", c)
+func TestARunWithoutACreateEnds(t *testing.T) {
+	h := newHarness(t)
+	h.run(EventInput{ID: "test"})
+	if len(h.store.events) != 0 {
+		t.Fatal("a run without a create stored something")
+	}
+}
+
+func TestHydrateClaimsTheStoredEvent(t *testing.T) {
+	h := newHarness(t)
+	h.stored(testEvent())
+	var answered Event
+	h.then(func() {
+		value, err := h.env.QueryWorkflow("event")
+		if err != nil || value.Get(&answered) != nil {
+			t.Fatal(err)
 		}
-		return WriteResult{}, nil
 	})
-	env.OnSignalExternalWorkflow(mock.Anything, "original", "", "finish", mock.Anything).Return(nil)
-	env.OnSignalExternalWorkflow(mock.Anything, "newest", "", "finish", mock.Anything).Return(nil)
-	saved := false
-	env.RegisterDelayedCallback(func() {
-		env.UpdateWorkflow("submit", "repeat", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
-			if err != nil {
-				t.Error(err)
-			}
-			saved = true
-		}}, Submission{Name: "Pat", Role: "Engineer", Email: " P@EXAMPLE.COM ", Reason: "Latest", RequestID: "12345678-1234-1234"})
-	}, time.Second)
-	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatal(err)
+	h.run(EventInput{ID: "test", Hydrate: true})
+	if answered.Name != "Test" || answered.Status != "open" || h.store.stored("test").Epoch != 2 {
+		t.Fatalf("answered %+v, epoch %d", answered, h.store.stored("test").Epoch)
 	}
-	var result Event
-	_ = env.GetWorkflowResult(&result)
-	if !saved || result.Count != 5001 {
-		t.Fatal("duplicate changed participant count")
+	// An event that isn't stored has nothing to run.
+	missing := newHarness(t)
+	missing.run(EventInput{ID: "missing", Hydrate: true})
+}
+
+func TestSubmissionsAreStoredAndRetriesAcknowledged(t *testing.T) {
+	h := newHarness(t)
+	h.stored(testEvent())
+	var first, changed, retry, reused, late, lateRetry *outcome
+	h.then(func() { first = h.update("submit", submission("p@example.com", "request-000000001")) })
+	h.then(func() {
+		next := submission("p@example.com", "request-000000002")
+		next.Role = "Manager"
+		changed = h.update("submit", next)
+	})
+	h.then(func() { retry = h.update("submit", submission("p@example.com", "request-000000001")) })
+	h.then(func() {
+		other := submission("p@example.com", "request-000000001")
+		other.Name = "Someone else"
+		reused = h.update("submit", other)
+	})
+	// After the event closes, a new response is refused but a retry is still acknowledged.
+	h.env.RegisterDelayedCallback(func() {
+		late = h.update("submit", submission("late@example.com", "request-000000003"))
+		lateRetry = h.update("submit", submission("p@example.com", "request-000000001"))
+	}, 2*time.Hour)
+	h.run(EventInput{ID: "test", Hydrate: true})
+	for name, o := range map[string]*outcome{"first": first, "changed": changed, "retry": retry, "lateRetry": lateRetry} {
+		if o == nil || o.err != nil || o.value != "saved" {
+			t.Errorf("%s = %+v", name, o)
+		}
 	}
-	env.AssertExpectations(t)
+	if errorType(reused.err) != "Invalid" || errorType(late.err) != "Closed" {
+		t.Fatalf("reused = %v, late = %v", reused.err, late.err)
+	}
+	stored := h.store.stored("test")
+	lead := h.store.participants["test"]["p@example.com"]
+	if stored.Event.Count != 1 || stored.Sequence != 2 || lead.Role != "Manager" || lead.Sequence != 2 || !lead.FirstSubmittedAt.Before(lead.LastSubmittedAt) {
+		t.Fatalf("stored = %+v, lead = %+v", stored, lead)
+	}
+	if len(h.store.receipts["test"]) != 2 {
+		t.Fatalf("receipts = %v", h.store.receipts["test"])
+	}
 }
 
 func TestInternalOnlyEventTakesOneResponsePerEmployee(t *testing.T) {
-	suite := testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
+	h := newHarness(t)
 	event := testEvent()
-	event.Shards, event.InternalOnly, event.Count = []string{"s0"}, true, 1
-	env.SetStartTime(event.ClosesAt.Add(-24 * time.Hour))
-	env.RegisterActivity(&Activities{})
-	original, err := Submission{Name: "Zoe", Role: "SA", Email: "zoe@temporal.io", RequestID: "first-request-0000"}.NormalizeForEvent(event)
+	event.InternalOnly = true
+	h.stored(event)
+	var first, second *outcome
+	h.then(func() { first = h.update("submit", submission("zoe@temporal.io", "request-000000001")) })
+	h.then(func() { second = h.update("submit", submission("zoe@temporal.io", "request-000000002")) })
+	h.run(EventInput{ID: "test", Hydrate: true})
+	if first.err != nil || errorType(second.err) != "AlreadyResponded" || h.store.stored("test").Event.Count != 1 {
+		t.Fatalf("first = %v, second = %v", first.err, second.err)
+	}
+}
+
+func TestEditsAreStoredBeforeTheyAreAcknowledged(t *testing.T) {
+	h := newHarness(t)
+	h.stored(testEvent())
+	revisions := map[string]int64{}
+	edit := func(name string, args ...any) {
+		h.then(func() {
+			result := h.update(name, args...)
+			h.env.RegisterDelayedCallback(func() {
+				if result.err != nil {
+					t.Errorf("%s: %v", name, result.err)
+				}
+				revisions[name] = h.store.stored("test").Event.Revision
+			}, 0)
+		})
+	}
+	subheading := ""
+	form := DefaultForm()
+	form.SubmitLabel = "Send"
+	edit("banner", "Booth 4")
+	edit("banner", "Booth 4")
+	edit("preview", LinkPreview{Title: "Hi"})
+	edit("form", form)
+	edit("details", EventDetails{Name: "Renamed", EndDate: "2026-10-07", Subheading: &subheading})
+	edit("slug", "renamed")
+	edit("end")
+	h.run(EventInput{ID: "test", Hydrate: true})
+	stored := h.store.stored("test").Event
+	if stored.QRBanner != "Booth 4" || stored.Preview == nil || stored.Form.SubmitLabel != "Send" || stored.Name != "Renamed" ||
+		stored.Subheading == nil || *stored.Subheading != "" || stored.Slug != "renamed" || stored.EndedAt == nil {
+		t.Fatalf("stored = %+v", stored)
+	}
+	// Six changes; the repeated banner was not one.
+	if stored.Revision != 6 || h.store.links["renamed"] != "test" {
+		t.Fatalf("revision = %d, links = %v", stored.Revision, h.store.links)
+	}
+}
+
+func TestDetailsMoveTheCompletionTimer(t *testing.T) {
+	h := newHarness(t)
+	h.stored(testEvent())
+	var timers []time.Duration
+	h.env.SetOnTimerScheduledListener(func(_ string, d time.Duration) { timers = append(timers, d) })
+	var moved, closedMove *outcome
+	h.then(func() { moved = h.update("details", EventDetails{Name: "Test", EndDate: "2026-10-09"}) })
+	h.env.RegisterDelayedCallback(func() {
+		closedMove = h.update("details", EventDetails{Name: "Test", EndDate: "2026-10-20"})
+	}, 3*24*time.Hour)
+	h.run(EventInput{ID: "test", Hydrate: true})
+	if moved.err != nil || errorType(closedMove.err) != "Closed" {
+		t.Fatalf("moved = %v, closedMove = %v", moved.err, closedMove.err)
+	}
+	var result Event
+	if err := h.env.GetWorkflowResult(&result); err != nil || !result.CompletesAt.Equal(time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("result = %+v, %v", result, err)
+	}
+	if len(timers) != 2 {
+		t.Fatalf("timers = %v", timers)
+	}
+}
+
+func TestSlugRefusesATakenLinkAndStopsAtMaxAliases(t *testing.T) {
+	h := newHarness(t)
+	h.stored(testEvent())
+	h.store.links["taken"] = "other"
+	var taken *outcome
+	h.then(func() { taken = h.update("slug", "taken") })
+	results := make([]*outcome, MaxAliases+1)
+	for i := range results {
+		h.then(func() { results[i] = h.update("slug", fmt.Sprintf("link-%d", i)) })
+	}
+	h.run(EventInput{ID: "test", Hydrate: true})
+	if errorType(taken.err) != "Invalid" || h.store.links["taken"] != "other" {
+		t.Fatalf("taken = %v", taken.err)
+	}
+	for i, result := range results[:MaxAliases] {
+		if result.err != nil {
+			t.Fatalf("link %d: %v", i, result.err)
+		}
+	}
+	if errorType(results[MaxAliases].err) != "Invalid" || len(h.store.stored("test").Event.Aliases) != MaxAliases {
+		t.Fatalf("eleventh = %v", results[MaxAliases].err)
+	}
+}
+
+func TestDeleteStopsLaterChanges(t *testing.T) {
+	h := newHarness(t)
+	h.stored(testEvent())
+	var deleted, after *outcome
+	h.then(func() { deleted = h.update("delete") })
+	h.then(func() { after = h.update("submit", submission("p@example.com", "request-000000001")) })
+	h.run(EventInput{ID: "test", Hydrate: true})
+	if deleted.err != nil || h.store.stored("test").Event.DeletedAt == nil || errorType(after.err) != "Closed" {
+		t.Fatalf("deleted = %v, after = %v", deleted.err, after.err)
+	}
+}
+
+// A completed event is deleted by a new run that loads it; the delete arrives
+// with the start, as Update-with-Start delivers it.
+func TestDeletingACompletedEventRunsBriefly(t *testing.T) {
+	h := newHarness(t)
+	event := testEvent()
+	event.CompletesAt = event.ClosesAt.Add(-2 * time.Hour)
+	h.stored(event)
+	var deleted *outcome
+	h.env.RegisterDelayedCallback(func() { deleted = h.update("delete") }, 0)
+	h.run(EventInput{ID: "test", Hydrate: true})
+	if deleted == nil || deleted.err != nil || h.store.stored("test").Event.DeletedAt == nil {
+		t.Fatalf("deleted = %+v", deleted)
+	}
+}
+
+func TestARunThatLosesTheEventStopsWriting(t *testing.T) {
+	h := newHarness(t)
+	h.stored(testEvent())
+	var fenced *outcome
+	h.then(func() {
+		// Another run takes the event over.
+		if _, err := h.store.Claim(context.Background(), "test"); err != nil {
+			t.Fatal(err)
+		}
+		fenced = h.update("banner", "From the old run")
+	})
+	h.run(EventInput{ID: "test", Hydrate: true})
+	if errorType(fenced.err) != "Fenced" || h.store.stored("test").Event.QRBanner != "" {
+		t.Fatalf("fenced = %v, stored = %+v", fenced.err, h.store.stored("test").Event)
+	}
+	// The run ended at once instead of waiting for completion.
+	if h.env.Now().After(testEvent().ClosesAt) {
+		t.Fatalf("the fenced run kept running until %v", h.env.Now())
+	}
+}
+
+func TestContinueAsNewReloadsFromTheStore(t *testing.T) {
+	h := newHarness(t)
+	h.stored(testEvent())
+	h.env.SetContinueAsNewSuggested(true)
+	h.env.ExecuteWorkflow(EventWorkflow, EventInput{ID: "test", Hydrate: true})
+	var continuation *workflow.ContinueAsNewError
+	if !errors.As(h.env.GetWorkflowError(), &continuation) {
+		t.Fatalf("expected Continue-As-New: %v", h.env.GetWorkflowError())
+	}
+	var next EventInput
+	if err := converter.GetDefaultDataConverter().FromPayloads(continuation.Input, &next); err != nil {
+		t.Fatal(err)
+	}
+	if next != (EventInput{ID: "test", Hydrate: true}) {
+		t.Fatalf("next = %+v", next)
+	}
+}
+
+func TestPausedEventRejectsEveryChangeButKeepsAnswering(t *testing.T) {
+	writesPaused.Store(true)
+	defer writesPaused.Store(false)
+	h := newHarness(t)
+	h.stored(testEvent())
+	updates := map[string][]any{
+		"submit": {submission("p@example.com", "request-000000001")},
+		"end":    nil, "delete": nil, "banner": {"Booth 4"},
+		"preview": {LinkPreview{Title: "Hi"}}, "form": {DefaultForm()}, "internalOnly": {DefaultForm()},
+		"details": {EventDetails{Name: "Renamed", EndDate: "2026-10-07"}}, "slug": {"renamed"},
+	}
+	results := map[string]*outcome{}
+	h.then(func() {
+		for name, args := range updates {
+			results[name] = h.update(name, args...)
+		}
+	})
+	h.run(EventInput{ID: "test", Hydrate: true})
+	for name, result := range results {
+		if errorType(result.err) != "Paused" {
+			t.Errorf("%s: %v", name, result.err)
+		}
+	}
+	if h.store.stored("test").Event.Revision != 0 {
+		t.Fatal("a paused change was stored")
+	}
+}
+
+func TestStartOpenEventsStartsEachOpenEvent(t *testing.T) {
+	store := newMemStore()
+	now := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	open, deleted, completed := testEvent(), testEvent(), testEvent()
+	deleted.ID, deleted.DeletedAt = "deleted", &now
+	completed.ID, completed.CompletesAt = "completed", now.Add(-time.Hour)
+	for _, event := range []Event{open, deleted, completed} {
+		store.events[event.ID] = EventState{Event: event}
+	}
+	c := &mocks.Client{}
+	c.On("ExecuteWorkflow", mock.Anything, mock.MatchedBy(func(options client.StartWorkflowOptions) bool {
+		return options.ID == "event/test" && options.TaskQueue == "events" &&
+			options.WorkflowIDConflictPolicy == enums.WORKFLOW_ID_CONFLICT_POLICY_USE_EXISTING &&
+			options.WorkflowIDReusePolicy == enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY
+	}), EventType, EventInput{ID: "test", Hydrate: true}).Return(&mocks.WorkflowRun{}, nil).Once()
+	suite := testsuite.WorkflowTestSuite{}
+	env := suite.NewTestActivityEnvironment()
+	env.RegisterActivity(&Activities{Client: c, Store: store, TaskQueue: "events"})
+	value, err := env.ExecuteActivity("StartOpenEvents")
 	if err != nil {
 		t.Fatal(err)
 	}
-	env.OnActivity("LocateLead", mock.Anything, mock.Anything).Return(LocatedLead{ShardID: "s0", Found: true, RequestID: original.RequestID, Digest: original.Digest()}, nil)
-	env.OnSignalExternalWorkflow(mock.Anything, "s0", "", "finish", mock.Anything).Return(nil)
-	checked := 0
-	env.RegisterDelayedCallback(func() {
-		// The browser retrying the response it already sent is still acknowledged.
-		env.UpdateWorkflow("submit", "retry", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
-			if err != nil || value != "saved" {
-				t.Errorf("retry = %v, %v", value, err)
-			}
-			checked++
-		}}, original)
-		second := original
-		second.RequestID, second.Role = "second-request-000", "Manager"
-		env.UpdateWorkflow("submit", "second", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
-			var application *temporal.ApplicationError
-			if !errors.As(err, &application) || application.Type() != "AlreadyResponded" {
-				t.Errorf("second response err = %v", err)
-			}
-			checked++
-		}}, second)
-	}, time.Second)
-	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatal(err)
+	var checked int
+	if err := value.Get(&checked); err != nil || checked != 1 {
+		t.Fatalf("checked = %d, %v", checked, err)
 	}
-	var result Event
-	_ = env.GetWorkflowResult(&result)
-	if checked != 2 || result.Count != 1 {
-		t.Fatalf("checked=%d count=%d", checked, result.Count)
-	}
-	// WriteLead isn't mocked; reaching it would fail the second Update with a different error.
-	env.AssertExpectations(t)
+	c.AssertExpectations(t)
 }
 
-func TestShardWritesAndFinish(t *testing.T) {
+func TestReconcilerKeepsGoingAndContinues(t *testing.T) {
 	suite := testsuite.WorkflowTestSuite{}
 	env := suite.NewTestWorkflowEnvironment()
-	lead := Lead{Email: "p@example.com", Name: "First", Sequence: 1}
-	env.RegisterDelayedCallback(func() {
-		env.UpdateWorkflow("write", "first", &testsuite.TestUpdateCallback{OnComplete: func(_ any, err error) {
-			if err != nil {
-				t.Error(err)
-			}
-		}}, WriteCommand{Lead: lead})
-	}, time.Second)
-	env.RegisterDelayedCallback(func() {
-		lead.Name = "Latest"
-		lead.Sequence = 2
-		env.UpdateWorkflow("write", "second", &testsuite.TestUpdateCallback{OnComplete: func(_ any, err error) {
-			if err != nil {
-				t.Error(err)
-			}
-		}}, WriteCommand{Lead: lead})
-	}, 2*time.Second)
-	env.RegisterDelayedCallback(func() {
-		value, err := env.QueryWorkflow("find", lead.Email)
-		if err != nil {
-			t.Fatal(err)
+	env.RegisterActivity(&Activities{})
+	passes := 0
+	env.OnActivity("StartOpenEvents", mock.Anything).Return(func(context.Context) (int, error) {
+		passes++
+		if passes == 2 {
+			// A failed pass is logged; the next one tries again.
+			return 0, temporal.NewNonRetryableApplicationError("store unavailable", "Unavailable", nil)
 		}
-		var result Lead
-		_ = value.Get(&result)
-		if result.Name != "Latest" {
-			t.Errorf("lead=%+v", result)
-		}
-		env.SignalWorkflow("finish", nil)
-	}, 3*time.Second)
-	env.ExecuteWorkflow(ParticipantShardWorkflow, ShardState{EventID: "test", Leads: []Lead{}})
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatal(err)
-	}
-	var count int
-	_ = env.GetWorkflowResult(&count)
-	if count != 1 {
-		t.Fatalf("count=%d", count)
-	}
-}
-
-func TestContinueAsNewPreservesCoordinatorState(t *testing.T) {
-	suite := testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
-	event := testEvent()
-	event.Count = 5001
-	event.Shards = []string{"a", "b"}
-	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
-	env.SetContinueAsNewSuggested(true)
-	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event, Sequence: 20, Receipts: []Receipt{{ID: "prior-request", Digest: "digest"}}})
-	var continuation *workflow.ContinueAsNewError
-	if !errors.As(env.GetWorkflowError(), &continuation) {
-		t.Fatalf("expected Continue-As-New: %v", env.GetWorkflowError())
-	}
-	var state EventState
-	if err := converter.GetDefaultDataConverter().FromPayloads(continuation.Input, &state); err != nil {
-		t.Fatal(err)
-	}
-	if state.Sequence != 20 || state.Event.Count != 5001 || len(state.Event.Shards) != 2 || len(state.Receipts) != 1 {
-		t.Fatalf("lost state: %+v", state)
-	}
-}
-
-func TestCoordinatorCreatesShardAfterCapacityAndRelocates(t *testing.T) {
-	for _, relocating := range []bool{false, true} {
-		t.Run(fmt.Sprintf("relocating=%t", relocating), func(t *testing.T) {
-			suite := testsuite.WorkflowTestSuite{}
-			env := suite.NewTestWorkflowEnvironment()
-			event := testEvent()
-			event.Count = MaxParticipants
-			event.Shards = []string{"original"}
-			env.SetStartTime(event.ClosesAt.Add(-time.Hour))
-			env.RegisterWorkflow(ParticipantShardWorkflow)
-			env.RegisterActivity(&Activities{})
-			located := LocatedLead{}
-			if relocating {
-				located = LocatedLead{ShardID: "original", Lead: &Lead{Email: "p@example.com", FirstSubmittedAt: env.Now().Add(-time.Hour)}}
-			}
-			env.OnActivity("LocateLead", mock.Anything, mock.Anything).Return(located, nil)
-			writes := 0
-			env.OnActivity("WriteLead", mock.Anything, mock.Anything).Return(func(_ context.Context, command WriteCommand) (WriteResult, error) {
-				writes++
-				if writes == 1 {
-					if command.ShardID != "original" {
-						t.Errorf("first write=%+v", command)
-					}
-					return WriteResult{Full: true}, nil
-				}
-				if writes == 2 && (command.ShardID != ShardID(event.ID, 1) || command.Delete) {
-					t.Errorf("new shard write=%+v", command)
-				}
-				if writes == 3 && (command.ShardID != "original" || !command.Delete) {
-					t.Errorf("delete after confirmed write=%+v", command)
-				}
-				return WriteResult{}, nil
-			})
-			env.OnSignalExternalWorkflow(mock.Anything, "original", "", "finish", mock.Anything).Return(nil)
-			saved := false
-			env.RegisterDelayedCallback(func() {
-				env.UpdateWorkflow("submit", "shard", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
-					if err != nil {
-						t.Error(err)
-					}
-					saved = true
-				}}, Submission{Name: "Pat", Role: "Engineer", Email: "p@example.com", RequestID: "12345678-1234-1234"})
-			}, time.Second)
-			env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
-			if err := env.GetWorkflowError(); err != nil {
-				t.Fatal(err)
-			}
-			var result Event
-			_ = env.GetWorkflowResult(&result)
-			expectedCount, expectedWrites := MaxParticipants+1, 2
-			if relocating {
-				expectedCount, expectedWrites = MaxParticipants, 3
-			}
-			if !saved || len(result.Shards) != 2 || result.Count != expectedCount || writes != expectedWrites {
-				t.Fatalf("event=%+v writes=%d saved=%t", result, writes, saved)
-			}
-			env.AssertExpectations(t)
-		})
-	}
-}
-
-func TestShardContinueAsNewKeepsRetryHighWaterMark(t *testing.T) {
-	suite := testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
-	env.SetContinueAsNewSuggested(true)
-	lead := Lead{Email: "p@example.com", Name: "Pat", Sequence: 42}
-	env.ExecuteWorkflow(ParticipantShardWorkflow, ShardState{EventID: "test", Leads: []Lead{lead}, LastSequence: 42})
-	var continuation *workflow.ContinueAsNewError
-	if !errors.As(env.GetWorkflowError(), &continuation) {
-		t.Fatal(env.GetWorkflowError())
-	}
-	var state ShardState
-	if err := converter.GetDefaultDataConverter().FromPayloads(continuation.Input, &state); err != nil {
-		t.Fatal(err)
-	}
-	if state.LastSequence != 42 || len(state.Leads) != 1 || state.Leads[0].Name != "Pat" {
-		t.Fatalf("state=%+v", state)
-	}
-}
-
-func TestCoordinatorRecognizesOlderRequestAfterContinuation(t *testing.T) {
-	for _, tc := range []struct{ changed, closed bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
-		changed := tc.changed
-		t.Run(fmt.Sprintf("changed=%t closed=%t", changed, tc.closed), func(t *testing.T) {
-			suite := testsuite.WorkflowTestSuite{}
-			env := suite.NewTestWorkflowEnvironment()
-			event := testEvent()
-			event.Count = 1
-			start := event.ClosesAt.Add(-time.Hour)
-			if tc.closed {
-				start = event.ClosesAt.Add(time.Hour)
-			}
-			env.SetStartTime(start)
-			input := Submission{Name: "Older", Role: "Engineer", Email: "p@example.com", RequestID: "12345678-older-request"}
-			saved := input.Digest()
-			if changed {
-				input.Name = "Different"
-			}
-			checked := false
-			env.RegisterDelayedCallback(func() {
-				env.UpdateWorkflow("submit", input.RequestID, &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
-					if (err != nil) != changed {
-						t.Errorf("changed=%t error=%v", changed, err)
-					}
-					checked = true
-				}}, input)
-			}, time.Second)
-			// This is the state a new run receives, after a newer request was accepted.
-			env.ExecuteWorkflow(EventWorkflow, EventState{Event: event, Sequence: 2, Receipts: []Receipt{{ID: input.RequestID, Digest: saved}, {ID: "12345678-newer-request", Digest: "newer"}}})
-			if err := env.GetWorkflowError(); err != nil {
-				t.Fatal(err)
-			}
-			var result Event
-			_ = env.GetWorkflowResult(&result)
-			if !checked || result.Count != 1 || result.Revision != 0 {
-				t.Fatal("old retry mutated event state")
-			}
-		})
-	}
-}
-
-func TestShardFinishesAtContinueAsNewBoundary(t *testing.T) {
-	suite := testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
-	env.RegisterDelayedCallback(func() {
-		for i := 1; i < 5; i++ {
-			env.UpdateWorkflow("write", fmt.Sprint(i), &testsuite.TestUpdateCallback{OnComplete: func(_ any, err error) {
-				if err != nil {
-					t.Error(err)
-				}
-			}}, WriteCommand{Lead: Lead{Email: "p@example.com", Sequence: int64(i)}})
-		}
-	}, time.Second)
-	// Continue-As-New becomes due in the same task that delivers finish, as when the
-	// server suggests it on the task that also carries the signal.
-	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflowSkippingWorkflowTask("finish", nil)
-		env.UpdateWorkflow("write", "final", &testsuite.TestUpdateCallback{OnAccept: func() { env.SetContinueAsNewSuggested(true) }}, WriteCommand{Lead: Lead{Email: "p@example.com", Sequence: 5}})
-	}, 2*time.Second)
-	env.ExecuteWorkflow(ParticipantShardWorkflow, ShardState{EventID: "audit", Leads: []Lead{}})
-	var continuation *workflow.ContinueAsNewError
-	if errors.As(env.GetWorkflowError(), &continuation) {
-		t.Fatal("finish signal was lost to Continue-As-New")
-	}
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestCustomSubmissionRetryIncludesAnswersAndPreservesDedupe(t *testing.T) {
-	// "recorded" is the full-record result in existing histories; "slim" is what LocateLead returns now.
-	for _, tc := range []struct {
-		format  string
-		changed bool
-	}{{"recorded", false}, {"recorded", true}, {"slim", false}, {"slim", true}} {
-		changed := tc.changed
-		t.Run(fmt.Sprintf("%s/changed=%t", tc.format, changed), func(t *testing.T) {
-			suite := testsuite.WorkflowTestSuite{}
-			env := suite.NewTestWorkflowEnvironment()
-			event := testEvent()
-			form := DefaultForm()
-			form.Sections[0].Fields = append(form.Sections[0].Fields, Field{ID: "topic", Label: "Topic", Type: "short_text"})
-			event.Form = &form
-			event.Count = 1
-			event.Shards = []string{"original"}
-			env.SetStartTime(event.ClosesAt.Add(-time.Hour))
-			env.RegisterActivity(&Activities{})
-			input := Submission{Name: "Pat", Role: "Engineer", Email: "p@example.com", RequestID: "12345678-1234-1234"}
-			normalized, _ := input.NormalizeForEvent(event)
-			normalized.Answers = append(normalized.Answers, Answer{FieldID: "topic", Values: []string{"Temporal"}})
-			prior := Lead{Name: normalized.Name, Role: normalized.Role, Email: normalized.Email, RequestID: normalized.RequestID, Answers: normalized.Answers}
-			located := LocatedLead{ShardID: "original", Lead: &prior}
-			if tc.format == "slim" {
-				located = LocatedLead{ShardID: "original", Found: true, RequestID: prior.RequestID, FirstSubmittedAt: prior.FirstSubmittedAt, Digest: prior.Digest()}
-			}
-			env.OnActivity("LocateLead", mock.Anything, mock.Anything).Return(located, nil)
-			env.OnSignalExternalWorkflow(mock.Anything, "original", "", "finish", mock.Anything).Return(nil)
-			if changed {
-				normalized.Answers = append([]Answer(nil), normalized.Answers...)
-				normalized.Answers[len(normalized.Answers)-1].Values = []string{"Cloud"}
-			}
-			checked := false
-			env.RegisterDelayedCallback(func() {
-				env.UpdateWorkflow("submit", normalized.RequestID, &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
-					if (err != nil) != changed {
-						t.Errorf("changed=%t error=%v", changed, err)
-					}
-					checked = true
-				}}, normalized)
-			}, time.Second)
-			env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
-			if err := env.GetWorkflowError(); err != nil {
-				t.Fatal(err)
-			}
-			var result Event
-			_ = env.GetWorkflowResult(&result)
-			if !checked || result.Count != 1 || result.Revision != 0 {
-				t.Fatal("retry mutated participant state")
-			}
-			env.AssertExpectations(t)
-		})
-	}
-}
-
-func TestBannerUpdateAndSchemaSurviveContinueAsNew(t *testing.T) {
-	suite := testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
-	event := testEvent()
-	form := DefaultForm()
-	event.Form = &form
-	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
-	checked := false
-	env.RegisterDelayedCallback(func() {
-		env.UpdateWorkflow("banner", "banner", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
-			if err != nil {
-				t.Error(err)
-			}
-			result := value.(Event)
-			if result.QRBanner != "Meet our team" || result.Revision != 1 {
-				t.Errorf("banner=%+v", result)
-			}
-			checked = true
-			env.SetContinueAsNewSuggested(true)
-		}}, "  Meet our team  ")
-	}, time.Second)
-	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
-	var continuation *workflow.ContinueAsNewError
-	if !errors.As(env.GetWorkflowError(), &continuation) {
-		t.Fatal(env.GetWorkflowError())
-	}
-	var state EventState
-	if err := converter.GetDefaultDataConverter().FromPayloads(continuation.Input, &state); err != nil {
-		t.Fatal(err)
-	}
-	if !checked || state.Event.QRBanner != "Meet our team" || state.Event.Revision != 1 || !reflect.DeepEqual(state.Event.Form, &form) {
-		t.Fatalf("schema/banner lost: %+v", state.Event)
-	}
-}
-
-func TestPreviewUpdateSurvivesContinueAsNewAndClears(t *testing.T) {
-	suite := testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
-	event := testEvent()
-	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
-	steps := []struct {
-		input    LinkPreview
-		want     *LinkPreview
-		revision int64
-	}{
-		{LinkPreview{Title: "  Booth 7  ", Description: " Say hi "}, &LinkPreview{Title: "Booth 7", Description: "Say hi"}, 1},
-		{LinkPreview{Title: "Booth 7", Description: "Say hi"}, &LinkPreview{Title: "Booth 7", Description: "Say hi"}, 1},
-		{LinkPreview{}, nil, 2},
-		{LinkPreview{Title: "Booth 9"}, &LinkPreview{Title: "Booth 9"}, 3},
-	}
-	checked := 0
-	for i, step := range steps {
-		env.RegisterDelayedCallback(func() {
-			env.UpdateWorkflow("preview", fmt.Sprintf("preview-%d", i), &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
-				if err != nil {
-					t.Error(err)
-					return
-				}
-				result := value.(Event)
-				if !reflect.DeepEqual(result.Preview, step.want) || result.Revision != step.revision {
-					t.Errorf("step %d: preview=%+v revision=%d", i, result.Preview, result.Revision)
-				}
-				checked++
-				if checked == len(steps) {
-					env.SetContinueAsNewSuggested(true)
-				}
-			}}, step.input)
-		}, time.Duration(i+1)*time.Second)
-	}
-	env.RegisterDelayedCallback(func() {
-		env.UpdateWorkflow("preview", "too-long", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
-			var application *temporal.ApplicationError
-			if !errors.As(err, &application) || application.Type() != "Invalid" {
-				t.Errorf("long preview: %v", err)
-			}
-		}}, LinkPreview{Title: strings.Repeat("x", 121)})
-	}, 500*time.Millisecond)
-	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
-	var continuation *workflow.ContinueAsNewError
-	if !errors.As(env.GetWorkflowError(), &continuation) {
-		t.Fatal(env.GetWorkflowError())
-	}
-	var state EventState
-	if err := converter.GetDefaultDataConverter().FromPayloads(continuation.Input, &state); err != nil {
-		t.Fatal(err)
-	}
-	if checked != len(steps) || !reflect.DeepEqual(state.Event.Preview, &LinkPreview{Title: "Booth 9"}) || state.Event.Revision != 3 {
-		t.Fatalf("preview lost: %+v", state.Event)
-	}
-}
-
-func TestShardContinueAsNewPreservesCustomAnswers(t *testing.T) {
-	suite := testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
-	env.SetContinueAsNewSuggested(true)
-	lead := Lead{Email: "p@example.com", Sequence: 2, Answers: []Answer{{FieldID: "topics", Values: []string{"Go", "Cloud"}}}}
-	env.ExecuteWorkflow(ParticipantShardWorkflow, ShardState{EventID: "test", Leads: []Lead{lead}, LastSequence: 2})
-	var continuation *workflow.ContinueAsNewError
-	if !errors.As(env.GetWorkflowError(), &continuation) {
-		t.Fatal(env.GetWorkflowError())
-	}
-	var state ShardState
-	if err := converter.GetDefaultDataConverter().FromPayloads(continuation.Input, &state); err != nil {
-		t.Fatal(err)
-	}
-	if len(state.Leads) != 1 || !reflect.DeepEqual(state.Leads[0].Answers, lead.Answers) {
-		t.Fatalf("custom answers lost: %+v", state)
-	}
-}
-
-func TestDeleteKeepsTheEventOutOfLaterSubmissions(t *testing.T) {
-	suite := testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
-	event := testEvent()
-	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
-	deleted := false
-	rejected := false
-	env.RegisterDelayedCallback(func() {
-		env.UpdateWorkflow("delete", "delete-event", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			result := value.(Event)
-			if result.DeletedAt == nil || result.Revision != 1 {
-				t.Errorf("delete=%+v", result)
-			}
-			deleted = true
-		}})
-	}, time.Second)
-	env.RegisterDelayedCallback(func() {
-		env.UpdateWorkflow("submit", "after-delete", &testsuite.TestUpdateCallback{
-			OnReject: func(err error) { rejected = closedUpdate(t, err) },
-			OnComplete: func(_ any, err error) {
-				if err == nil {
-					t.Error("deleted event accepted a submission")
-					return
-				}
-				rejected = closedUpdate(t, err)
-			},
-		}, Submission{Name: "Pat", Role: "Engineer", Email: "p@example.com", RequestID: "12345678-1234-1234"})
-	}, 2*time.Second)
-	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatal(err)
-	}
-	var result Event
-	if err := env.GetWorkflowResult(&result); err != nil {
-		t.Fatal(err)
-	}
-	if !deleted || !rejected || result.DeletedAt == nil || result.Count != 0 {
-		t.Fatalf("deleted=%t rejected=%t result=%+v", deleted, rejected, result)
-	}
-}
-
-func closedUpdate(t *testing.T, err error) bool {
-	t.Helper()
-	var app *temporal.ApplicationError
-	if !errors.As(err, &app) || app.Type() != "Closed" {
-		t.Errorf("update error=%v", err)
-		return false
-	}
-	return true
-}
-
-func TestFormUpdateReplacesQuestionsAndSurvivesContinueAsNew(t *testing.T) {
-	suite := testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
-	event := testEvent()
-	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
-	edited := DefaultForm()
-	edited.Sections[0].Fields = append(edited.Sections[0].Fields, Field{ID: "topic", Label: " Topic ", Type: "multiple_choice", Options: []string{"Go"}, AllowOther: true})
-	checked := false
-	env.RegisterDelayedCallback(func() {
-		env.UpdateWorkflow("form", "invalid", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
-			if err == nil {
-				t.Error("accepted a form without an email question")
-			}
-		}}, Form{Sections: []Section{{ID: "a", Fields: []Field{{ID: "name", Label: "Name", Type: "short_text"}}}}})
-		env.UpdateWorkflow("form", "valid", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			result := value.(Event)
-			if result.Form == nil || len(result.Form.Sections[0].Fields) != 5 || result.Form.Sections[0].Fields[4].Label != "Topic" || result.Revision != 1 {
-				t.Errorf("form=%+v", result)
-			}
-			checked = true
-			env.SetContinueAsNewSuggested(true)
-		}}, edited)
-	}, time.Second)
-	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
-	var continuation *workflow.ContinueAsNewError
-	if !errors.As(env.GetWorkflowError(), &continuation) {
-		t.Fatal(env.GetWorkflowError())
-	}
-	var state EventState
-	if err := converter.GetDefaultDataConverter().FromPayloads(continuation.Input, &state); err != nil {
-		t.Fatal(err)
-	}
-	if !checked || state.Event.Form == nil || !state.Event.Form.Sections[0].Fields[4].AllowOther {
-		t.Fatalf("edited form lost: %+v", state.Event)
-	}
-}
-
-func TestInternalOnlyUpdateKeepsIdentityQuestionsAndSurvivesContinueAsNew(t *testing.T) {
-	suite := testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
-	event := testEvent()
-	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
-	withoutName := Form{Sections: []Section{{ID: "a", Fields: []Field{{ID: "email", Label: "Email", Type: "email", Required: true}}}}}
-	expectInvalid := func(name string) *testsuite.TestUpdateCallback {
-		return &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
-			var application *temporal.ApplicationError
-			if !errors.As(err, &application) || application.Type() != "Invalid" {
-				t.Errorf("%s: err = %v", name, err)
-			}
-		}}
-	}
-	checked := false
-	env.RegisterDelayedCallback(func() {
-		env.UpdateWorkflow("internalOnly", "without-name", expectInvalid("internalOnly without a name question"), withoutName)
-		env.UpdateWorkflow("internalOnly", "valid", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
-			if result, _ := value.(Event); err != nil || !result.InternalOnly || result.Revision != 1 {
-				t.Errorf("internalOnly = %+v, %v", value, err)
-			}
-		}}, DefaultForm())
-		// Once internal-only, a form edit can't drop the name question the sign-in answers.
-		env.UpdateWorkflow("form", "drop-name", expectInvalid("form edit without a name question"), withoutName)
-		env.UpdateWorkflow("form", "keep-name", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
-			if result, _ := value.(Event); err != nil || !result.InternalOnly {
-				t.Errorf("form = %+v, %v", value, err)
-			}
-			checked = true
-			env.SetContinueAsNewSuggested(true)
-		}}, DefaultForm())
-	}, time.Second)
-	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
-	var continuation *workflow.ContinueAsNewError
-	if !errors.As(env.GetWorkflowError(), &continuation) {
-		t.Fatal(env.GetWorkflowError())
-	}
-	var state EventState
-	if err := converter.GetDefaultDataConverter().FromPayloads(continuation.Input, &state); err != nil {
-		t.Fatal(err)
-	}
-	if !checked || !state.Event.InternalOnly {
-		t.Fatalf("internal-only lost: %+v", state.Event)
-	}
-}
-
-func TestDetailsUpdateReschedulesCompletion(t *testing.T) {
-	for _, tc := range []struct {
-		name, endDate string
-		closes        time.Time
-	}{
-		{"extend", "2026-10-10", time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)},
-		{"shorten", "2026-10-06", time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			suite := testsuite.WorkflowTestSuite{}
-			env := suite.NewTestWorkflowEnvironment()
-			event := testEvent()
-			event.Shards = []string{"original"}
-			env.SetStartTime(event.ClosesAt.Add(-48 * time.Hour))
-			var timers []time.Duration
-			env.SetOnTimerScheduledListener(func(_ string, duration time.Duration) { timers = append(timers, duration) })
-			env.OnSignalExternalWorkflow(mock.Anything, "original", "", "finish", mock.Anything).Return(nil).Once()
-			saved := false
-			env.RegisterDelayedCallback(func() {
-				env.UpdateWorkflow("details", "details", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
-					if err != nil {
-						t.Error(err)
-						return
-					}
-					e := value.(Event)
-					if e.EndDate != tc.endDate || !e.ClosesAt.Equal(tc.closes) || !e.CompletesAt.Equal(tc.closes.AddDate(0, 0, 7)) || e.Status != "open" || e.Revision != 1 {
-						t.Errorf("details=%+v", e)
-					}
-					saved = true
-				}}, EventDetails{Name: "Test", EndDate: tc.endDate})
-			}, time.Hour)
-			// Past the old close time, an extended event still takes submissions.
-			checked := tc.name != "extend"
-			if !checked {
-				env.RegisterDelayedCallback(func() {
-					value, err := env.QueryWorkflow("event")
-					if err != nil {
-						t.Fatal(err)
-					}
-					var e Event
-					_ = value.Get(&e)
-					if e.Status != "open" {
-						t.Errorf("extended event status=%s", e.Status)
-					}
-					checked = true
-				}, 49*time.Hour)
-			}
-			env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
-			if err := env.GetWorkflowError(); err != nil {
-				t.Fatal(err)
-			}
-			if !saved || !checked {
-				t.Fatalf("saved=%t checked=%t", saved, checked)
-			}
-			if want := tc.closes.AddDate(0, 0, 7); !env.Now().Equal(want) {
-				t.Fatalf("completed at %v, want %v", env.Now(), want)
-			}
-			if len(timers) != 2 {
-				t.Fatalf("timers=%v", timers)
-			}
-			env.AssertExpectations(t)
-		})
-	}
-}
-
-func TestDetailsUpdateChangesTextWithoutANewTimer(t *testing.T) {
-	suite := testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
-	event := testEvent()
-	event.Description = "Old welcome"
-	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
-	var timers []time.Duration
-	env.SetOnTimerScheduledListener(func(_ string, duration time.Duration) { timers = append(timers, duration) })
-	revisions := []int64{}
-	env.RegisterDelayedCallback(func() {
-		for _, details := range []EventDetails{
-			{Name: "  Renamed  ", Description: "  New welcome  ", EndDate: event.EndDate},
-			{Name: "Renamed", Description: "New welcome", EndDate: event.EndDate},
-		} {
-			env.UpdateWorkflow("details", "", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
-				if err != nil {
-					t.Error(err)
-					return
-				}
-				e := value.(Event)
-				if e.Name != "Renamed" || e.Description != "New welcome" || !e.CompletesAt.Equal(event.CompletesAt) {
-					t.Errorf("details=%+v", e)
-				}
-				revisions = append(revisions, e.Revision)
-			}}, details)
-		}
-	}, time.Second)
-	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(revisions, []int64{1, 1}) {
-		t.Fatalf("an unchanged save should not bump the revision: %v", revisions)
-	}
-	if len(timers) != 1 || !env.Now().Equal(event.CompletesAt) {
-		t.Fatalf("timers=%v completed=%v", timers, env.Now())
-	}
-}
-
-func TestDetailsUpdateSetsAndClearsTheSubheading(t *testing.T) {
-	suite := testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
-	event := testEvent()
-	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
-	text := func(s string) *string { return &s }
-	steps := []struct {
-		subheading *string
-		want       string
-		revision   int64
-	}{
-		{nil, DefaultSubheading, 0},
-		{text(DefaultSubheading), DefaultSubheading, 0},
-		{text("  Thanks for stopping by  "), "Thanks for stopping by", 1},
-		{text(""), "", 2},
-		{nil, "", 2},
-	}
-	env.RegisterDelayedCallback(func() {
-		for _, step := range steps {
-			env.UpdateWorkflow("details", "", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
-				if err != nil {
-					t.Error(err)
-					return
-				}
-				e := value.(Event)
-				if e.EffectiveSubheading() != step.want || e.Revision != step.revision {
-					t.Errorf("after %v: subheading=%q revision=%d, want %q and %d", step.subheading, e.EffectiveSubheading(), e.Revision, step.want, step.revision)
-				}
-			}}, EventDetails{Name: event.Name, EndDate: event.EndDate, Subheading: step.subheading})
-		}
-	}, time.Second)
-	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestDetailsUpdateRejectsInvalidAndClosedChanges(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		setup   string // "", "end", or "delete"
-		details EventDetails
-		want    string // ApplicationError type, or "" for success
-	}{
-		{"past end date", "", EventDetails{Name: "Test", EndDate: "2026-10-01"}, "Invalid"},
-		{"blank name", "", EventDetails{Name: "  ", EndDate: "2026-10-07"}, "Invalid"},
-		{"bad date", "", EventDetails{Name: "Test", EndDate: "10/07/2026"}, "Invalid"},
-		{"new date after end", "end", EventDetails{Name: "Test", EndDate: "2026-10-09"}, "Closed"},
-		{"rename after end", "end", EventDetails{Name: "Renamed", EndDate: "2026-10-07"}, ""},
-		{"rename after delete", "delete", EventDetails{Name: "Renamed", EndDate: "2026-10-07"}, "Closed"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			suite := testsuite.WorkflowTestSuite{}
-			env := suite.NewTestWorkflowEnvironment()
-			event := testEvent()
-			env.SetStartTime(event.ClosesAt.Add(-24 * time.Hour))
-			if tc.setup != "" {
-				env.RegisterDelayedCallback(func() {
-					env.UpdateWorkflow(tc.setup, tc.setup, &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
-						if err != nil {
-							t.Error(err)
-						}
-					}})
-				}, time.Second)
-			}
-			checked := false
-			check := func(err error) {
-				var app *temporal.ApplicationError
-				if tc.want == "" && err != nil || tc.want != "" && (!errors.As(err, &app) || app.Type() != tc.want) {
-					t.Errorf("error=%v, want %q", err, tc.want)
-				}
-				checked = true
-			}
-			env.RegisterDelayedCallback(func() {
-				env.UpdateWorkflow("details", "details", &testsuite.TestUpdateCallback{OnReject: check, OnComplete: func(_ any, err error) { check(err) }}, tc.details)
-			}, 2*time.Second)
-			env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
-			if err := env.GetWorkflowError(); err != nil {
-				t.Fatal(err)
-			}
-			var result Event
-			_ = env.GetWorkflowResult(&result)
-			if !checked || !result.CompletesAt.Equal(event.CompletesAt) {
-				t.Fatalf("checked=%t result=%+v", checked, result)
-			}
-		})
-	}
-}
-
-func TestDetailsUpdateSurvivesContinueAsNew(t *testing.T) {
-	suite := testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
-	event := testEvent()
-	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
-	env.RegisterDelayedCallback(func() {
-		env.UpdateWorkflow("details", "details", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
-			if err != nil {
-				t.Error(err)
-			}
-			env.SetContinueAsNewSuggested(true)
-		}}, EventDetails{Name: "Renamed", Description: "Hi", EndDate: "2026-10-12"})
-	}, time.Second)
-	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
-	var continuation *workflow.ContinueAsNewError
-	if !errors.As(env.GetWorkflowError(), &continuation) {
-		t.Fatal(env.GetWorkflowError())
-	}
-	var state EventState
-	if err := converter.GetDefaultDataConverter().FromPayloads(continuation.Input, &state); err != nil {
-		t.Fatal(err)
-	}
-	e := state.Event
-	if e.Name != "Renamed" || e.Description != "Hi" || e.EndDate != "2026-10-12" || !e.CompletesAt.Equal(time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)) {
-		t.Fatalf("details lost: %+v", e)
-	}
-}
-
-func TestSlugUpdateReservesAliasesAndFinishesThem(t *testing.T) {
-	suite := testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
-	event := testEvent()
-	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
-	// The real alias runs as a child; the test environment fails completion if the
-	// finish signal cannot reach a running alias.
-	env.RegisterWorkflow(EventAliasWorkflow)
-	var started []string
-	env.SetOnChildWorkflowStartedListener(func(info *workflow.Info, _ workflow.Context, args converter.EncodedValues) {
-		var state AliasState
-		if err := args.Get(&state); err != nil || state.EventID != "test" {
-			t.Errorf("alias state=%+v err=%v", state, err)
-		}
-		started = append(started, info.WorkflowExecution.ID)
+		return 1, nil
 	})
-	var results []Event
-	update := func(slug string, wantErr bool) {
-		env.UpdateWorkflow("slug", "", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
-			if (err != nil) != wantErr {
-				t.Errorf("slug %q error=%v", slug, err)
-			}
-			if err == nil {
-				results = append(results, value.(Event))
-			}
-		}}, slug)
+	env.ExecuteWorkflow(ReconcileWorkflow)
+	var continuation *workflow.ContinueAsNewError
+	if !errors.As(env.GetWorkflowError(), &continuation) || passes != reconcilePasses {
+		t.Fatalf("passes = %d, err = %v", passes, env.GetWorkflowError())
 	}
-	env.RegisterDelayedCallback(func() {
-		update("Renamed!", false) // reserves "renamed"
-		update("renamed", false)  // already current
-		update("test", false)     // back to the original, no new alias
-		update("renamed", false)  // an alias it already holds
-		update("admin", true)     // reserved path
-	}, time.Second)
-	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatal(err)
-	}
-	links := []string{}
-	for _, e := range results {
-		links = append(links, e.Link())
-	}
-	if !reflect.DeepEqual(links, []string{"renamed", "renamed", "test", "renamed"}) || !reflect.DeepEqual(started, []string{"event/renamed"}) {
-		t.Fatalf("links=%v started=%v", links, started)
-	}
-	var result Event
-	_ = env.GetWorkflowResult(&result)
-	if !reflect.DeepEqual(result.Aliases, []string{"renamed"}) || result.Revision != 3 {
-		t.Fatalf("result=%+v", result)
-	}
-}
-
-func TestSlugUpdateStopsAtMaxAliases(t *testing.T) {
-	suite := testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
-	event := testEvent()
-	for i := range MaxAliases {
-		event.Aliases = append(event.Aliases, fmt.Sprintf("alias-%d", i))
-	}
-	env.SetStartTime(event.ClosesAt.Add(-time.Hour))
-	env.RegisterWorkflow(EventAliasWorkflow)
-	env.OnSignalExternalWorkflow(mock.Anything, mock.Anything, "", "finish", mock.Anything).Return(nil).Times(MaxAliases)
-	checked := false
-	env.RegisterDelayedCallback(func() {
-		env.UpdateWorkflow("slug", "", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
-			var app *temporal.ApplicationError
-			if !errors.As(err, &app) || app.Type() != "Invalid" {
-				t.Errorf("error=%v", err)
-			}
-			checked = true
-		}}, "one-too-many")
-		env.UpdateWorkflow("slug", "", &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
-			if err != nil {
-				t.Errorf("switching to a held alias failed: %v", err)
-			}
-		}}, "alias-3")
-	}, time.Second)
-	env.ExecuteWorkflow(EventWorkflow, EventState{Event: event})
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatal(err)
-	}
-	var result Event
-	_ = env.GetWorkflowResult(&result)
-	if !checked || len(result.Aliases) != MaxAliases || result.Link() != "alias-3" {
-		t.Fatalf("result=%+v", result)
-	}
-	env.AssertExpectations(t)
 }

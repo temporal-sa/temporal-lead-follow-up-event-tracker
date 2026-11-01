@@ -1,7 +1,6 @@
 package tracker
 
 import (
-	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -214,32 +213,6 @@ func TestOptionalDefaultFieldsAndDedupeDigest(t *testing.T) {
 	c, _ := input.NormalizeForEvent(event)
 	if a.Digest() == c.Digest() {
 		t.Fatal("custom fields are not included in retry digest")
-	}
-}
-
-func TestCustomAnswersPersistThroughShardJSONAndReplacement(t *testing.T) {
-	state := ShardState{EventID: "event", Leads: []Lead{}}
-	lead := Lead{Email: "p@example.com", Sequence: 1, Answers: []Answer{{FieldID: "topics", Values: []string{"Go", "Cloud"}}, {FieldID: "grid", Values: []string{`["A","B"]`, `[]`}}}}
-	result, err := state.Apply(WriteCommand{Lead: lead})
-	if err != nil || result.Full {
-		t.Fatal(err)
-	}
-	encoded, err := json.Marshal(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var restored ShardState
-	if err := json.Unmarshal(encoded, &restored); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(restored.Find(lead.Email).Answers, lead.Answers) || !reflect.DeepEqual(AnswerValues(*restored.Find(lead.Email), "topics"), []string{"Go", "Cloud"}) {
-		t.Fatal("custom answers lost during durable-state round trip")
-	}
-	lead.Sequence = 2
-	lead.Answers = []Answer{{FieldID: "topics", Values: []string{"Go"}}}
-	_, _ = restored.Apply(WriteCommand{Lead: lead})
-	if len(restored.Leads) != 1 || len(restored.Find(lead.Email).Answers[0].Values) != 1 {
-		t.Fatal("custom update was duplicated rather than replaced")
 	}
 }
 

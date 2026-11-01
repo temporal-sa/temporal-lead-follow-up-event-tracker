@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/mail"
 	"strconv"
 	"strings"
@@ -15,11 +14,7 @@ import (
 
 const (
 	EventType        = "EventWorkflow"
-	ShardType        = "ParticipantShardWorkflow"
 	DefaultTaskQueue = "event-leads"
-	MaxParticipants  = 5000
-	MaxShardBytes    = 1024 * 1024
-	RecentRequests   = 1024
 	PageSize         = 100
 )
 
@@ -37,8 +32,6 @@ type Event struct {
 	Status      string     `json:"status"`
 	Count       int        `json:"count"`
 	Revision    int64      `json:"revision"`
-	Busy        bool       `json:"busy"`
-	Shards      []string   `json:"shards"`
 	Form        *Form      `json:"form,omitempty"`
 	QRBanner    string     `json:"qrBanner,omitempty"`
 	// Slug is the link the event shares now; empty means its ID. The ID and every
@@ -207,7 +200,7 @@ func NewEvent(id, employee string, input CreateEvent, now time.Time) (Event, err
 			preview = &normalized
 		}
 	}
-	return Event{ID: id, Name: input.Name, Description: input.Description, EndDate: input.EndDate, CreatedBy: employee, CreatedAt: now.UTC(), ClosesAt: closes, CompletesAt: closes.AddDate(0, 0, 7), Shards: []string{}, Status: "open", Form: &form, QRBanner: banner, Preview: preview, InternalOnly: input.InternalOnly, Subheading: details.Subheading}, nil
+	return Event{ID: id, Name: input.Name, Description: input.Description, EndDate: input.EndDate, CreatedBy: employee, CreatedAt: now.UTC(), ClosesAt: closes, CompletesAt: closes.AddDate(0, 0, 7), Status: "open", Form: &form, QRBanner: banner, Preview: preview, InternalOnly: input.InternalOnly, Subheading: details.Subheading}, nil
 }
 
 type Submission struct {
@@ -261,12 +254,18 @@ type Lead struct {
 	Answers          []Answer  `json:"answers,omitempty"`
 }
 
+// EventState is an event workflow's working copy of what the store holds.
 type EventState struct {
-	Event    Event     `json:"event"`
-	Sequence int64     `json:"sequence"`
-	Receipts []Receipt `json:"receipts"`
+	Event Event `json:"event"`
+	// Sequence orders participant writes, so an older attempt never replaces a newer one.
+	Sequence int64 `json:"sequence"`
+	// Epoch fences writers: each run that takes over the event gets a new one, and
+	// the store rejects writes from any other.
+	Epoch int64 `json:"epoch"`
 }
 
+// Receipt records which details a submission request ID carried, so a retry is
+// acknowledged without writing again and a reused ID with new details is refused.
 type Receipt struct {
 	ID     string `json:"id"`
 	Digest string `json:"digest"`
@@ -289,55 +288,19 @@ func (s Submission) Digest() string {
 	return hex.EncodeToString(sum[:])
 }
 
-type ShardState struct {
-	EventID string `json:"eventId"`
-	Leads   []Lead `json:"leads"`
-	// The high-water mark makes old Activity attempts harmless after a relocation.
-	LastSequence int64 `json:"lastSequence"`
-}
-
-type WriteCommand struct {
-	ShardID string `json:"shardId"`
-	Lead    Lead   `json:"lead"`
-	Delete  bool   `json:"delete"`
-}
-
-type WriteResult struct {
-	Full bool `json:"full"`
-}
-type LocateInput struct {
-	Shards []string `json:"shards"`
-	Email  string   `json:"email"`
-}
-
-// LocatedLead is what the coordinator needs about an existing participant,
-// without copying their answers into its history.
-type LocatedLead struct {
-	ShardID          string    `json:"shardId"`
+// Existing is what a submission needs to know about the person's earlier
+// response and about its own request ID, without their answers.
+type Existing struct {
 	Found            bool      `json:"found,omitempty"`
 	RequestID        string    `json:"requestId,omitempty"`
 	FirstSubmittedAt time.Time `json:"firstSubmittedAt"`
 	Digest           string    `json:"digest,omitempty"`
-	// Lead is only present in results recorded before this was slimmed down.
-	// Resolved derives the same fields from it, so those histories replay unchanged.
-	Lead *Lead `json:"lead,omitempty"`
-}
-
-func (l LocatedLead) Resolved() LocatedLead {
-	if l.Lead != nil {
-		l.Found, l.RequestID, l.FirstSubmittedAt, l.Digest = true, l.Lead.RequestID, l.Lead.FirstSubmittedAt, l.Lead.Digest()
-		l.Lead = nil
-	}
-	return l
+	// Receipt is the earlier submission with this request ID, if any.
+	Receipt *Receipt `json:"receipt,omitempty"`
 }
 
 func (l Lead) Digest() string {
 	return Submission{Name: l.Name, Role: l.Role, Email: l.Email, Reason: l.Reason, Answers: l.Answers}.Digest()
-}
-
-type ShardPage struct {
-	Leads []Lead `json:"leads"`
-	Total int    `json:"total"`
 }
 
 // MaxSlugLength keeps "/" + slug within the 40 bytes the QR code reserves for an event path.
@@ -393,62 +356,4 @@ func NormalizeSlug(input string) (string, error) {
 	return slug, nil
 }
 
-func EventID(id string) string           { return "event/" + id }
-func ShardID(event string, n int) string { return fmt.Sprintf("event/%s/participants/%d", event, n) }
-
-func (s *ShardState) Find(email string) *Lead {
-	for i := range s.Leads {
-		if s.Leads[i].Email == email {
-			lead := s.Leads[i]
-			return &lead
-		}
-	}
-	return nil
-}
-
-// Apply performs no I/O and is also used to exercise the actual capacity boundary.
-func (s *ShardState) Apply(c WriteCommand) (WriteResult, error) {
-	if c.Lead.Sequence <= s.LastSequence {
-		return WriteResult{}, nil
-	}
-	index := -1
-	for i := range s.Leads {
-		if s.Leads[i].Email == c.Lead.Email {
-			index = i
-			break
-		}
-	}
-	if c.Delete {
-		if index >= 0 {
-			s.Leads = append(s.Leads[:index], s.Leads[index+1:]...)
-		}
-		s.LastSequence = c.Lead.Sequence
-		return WriteResult{}, nil
-	}
-	if index < 0 && len(s.Leads) >= MaxParticipants {
-		return WriteResult{Full: true}, nil
-	}
-	previous := Lead{}
-	if index >= 0 {
-		previous = s.Leads[index]
-		s.Leads[index] = c.Lead
-	} else {
-		s.Leads = append(s.Leads, c.Lead)
-	}
-	// This concrete state contains structs/slices only; JSON map-order warnings do not apply.
-	data, err := json.Marshal(s) //workflowcheck:ignore
-	if err != nil {
-		return WriteResult{}, err
-	}
-	// Leave room for the updated sequence number and Continue-As-New envelope.
-	if len(data)+256 > MaxShardBytes {
-		if index >= 0 {
-			s.Leads[index] = previous
-		} else {
-			s.Leads = s.Leads[:len(s.Leads)-1]
-		}
-		return WriteResult{Full: true}, nil
-	}
-	s.LastSequence = c.Lead.Sequence
-	return WriteResult{}, nil
-}
+func EventID(id string) string { return "event/" + id }

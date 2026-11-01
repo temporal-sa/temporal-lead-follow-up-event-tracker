@@ -11,8 +11,6 @@ import (
 func newReplayer() worker.WorkflowReplayer {
 	replayer := worker.NewWorkflowReplayer()
 	replayer.RegisterWorkflow(EventWorkflow)
-	replayer.RegisterWorkflow(ParticipantShardWorkflow)
-	replayer.RegisterWorkflow(EventAliasWorkflow)
 	return replayer
 }
 

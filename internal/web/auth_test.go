@@ -353,8 +353,8 @@ func TestInternalOnlySubmissionUsesTheSignedInIdentity(t *testing.T) {
 func TestInternalOnlyEventShowsAnEarlierResponse(t *testing.T) {
 	responded := time.Date(2026, 10, 30, 15, 4, 0, 0, time.UTC)
 	g := &fakeGateway{
-		event:  tracker.Event{ID: "summit", Status: "open", InternalOnly: true, Shards: []string{"s0"}},
-		shards: map[string][]tracker.Lead{"s0": {{Email: "zoe@temporal.io", LastSubmittedAt: responded}}},
+		event: tracker.Event{ID: "summit", Status: "open", InternalOnly: true},
+		leads: []tracker.Lead{{Email: "zoe@temporal.io", LastSubmittedAt: responded}},
 	}
 	h := testHandlerWithVerifier(t, g, internalVerifier("Zoe"))
 	readParticipant := func() map[string]any {
@@ -371,11 +371,11 @@ func TestInternalOnlyEventShowsAnEarlierResponse(t *testing.T) {
 	if got := readParticipant()["respondedAt"]; got != "2026-10-30T15:04:00Z" {
 		t.Fatalf("respondedAt = %v", got)
 	}
-	g.shards["s0"][0].Email = "someone@temporal.io"
+	g.leads[0].Email = "someone@temporal.io"
 	if got, found := readParticipant()["respondedAt"]; found {
 		t.Fatalf("respondedAt for a new participant = %v", got)
 	}
-	g.pageError = serviceerror.NewUnavailable("shard unavailable")
+	g.pageError = serviceerror.NewUnavailable("store unavailable")
 	if w := request(t, h, "GET", "/api/events/summit", "", validSession, ""); w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unavailable shard = %d %s", w.Code, w.Body.String())
 	}

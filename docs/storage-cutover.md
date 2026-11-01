@@ -5,120 +5,107 @@ DynamoDB table that lives outside the catalog. Afterwards the workflows still ow
 every change, but the table is the permanent record: it survives a Temporal
 namespace reset and the end of retention.
 
-The move takes three releases, and no data is lost:
-
-| Phase | What ships | What changes for users |
+| Phase | What ships | Status |
 |---|---|---|
-| 0. Infrastructure | `deploy/create-store.sh` creates the table and IAM roles (done) | Nothing |
-| A. Copy | The backfill, `WRITES_PAUSED`, and a worker IAM role | Ended events can't be deleted until phase B |
-| Freeze | `WRITES_PAUSED=true`, then the old workflows are terminated | Every change returns "Changes are paused for maintenance" for the window |
-| B. Switch | Workflows write to the table; reads come from it; a reconciler restarts open events | None, apart from the participant table ordering by first response |
+| 0. Infrastructure | `deploy/create-store.sh` creates the table and the worker and web IAM roles | Done |
+| A. Copy | The backfill, `WRITES_PAUSED`, and the worker's IAM role | Done; the backfill copied and verified both events |
+| Freeze | `WRITES_PAUSED=true`, then the old workflows are terminated and copied one last time | To do |
+| B. Switch | Workflows write to the table; reads come from it; a reconciler restarts open events | To do |
 
-Retained events leave Temporal when their retention ends, so finish phase A and
-run the backfill as soon as possible. Repeat the backfill until the freeze.
+Two things about the platform shape the order below:
+
+- The live manifest is `projects/demo/event-leads.yaml` in
+  `temporal-sa/tmprl-demo-cloud-registry`. `deploy/demo-project.yaml` here is a copy;
+  change both.
+- The platform rebuilds and rolls out as soon as anything merges to this repo's `main`,
+  with whatever manifest it has. So settings a release needs must land before the
+  release merges. PR A's worker crash-looped for about 15 minutes because its
+  `EVENT_LEADS_TABLE` arrived after the code.
 
 ## Before you start
 
-- Temporal CLI access to the project's namespace (`tmprl-dem-cld-event-leads`), and its API key.
-- A checkout of this repository, to run `tracker backfill`. The command only starts
-  a workflow; the deployed worker does the copying, so you need no AWS access.
-- Commands below use this helper. Fill in the address and key:
+- `kubectl --context blue` access to the platform cluster. Find the current rollout's
+  namespace and worker with:
 
   ```sh
-  export TEMPORAL_ADDRESS=<namespace gRPC endpoint> TEMPORAL_NAMESPACE=tmprl-dem-cld-event-leads
-  export TEMPORAL_API_KEY=<key> TEMPORAL_TASK_QUEUE=event-leads-unversioned
-  go build -o bin/tracker ./cmd/tracker
+  kubectl --context blue get ns | grep event-leads
+  kubectl --context blue -n <namespace> get deploy
   ```
 
-## Phase 0: infrastructure
+- Temporal CLI access to the `tmprl-dem-cld-event-leads` namespace in Temporal Cloud,
+  for the terminate step.
+- Pick a time when no responses are expected: during the freeze, an attendee who
+  submits sees "Changes are paused for maintenance" and has to submit again.
 
-The table and roles are created directly in the demo AWS account, not through the
-platform's infrastructure, so nothing the platform does can remove them.
+## 1. Freeze
 
-1. With administrator access to account 429214323166, run `deploy/create-store.sh`.
-   It creates the `tmprl-dem-cld-event-leads` table (with deletion protection and
-   point-in-time recovery) and the `tmprl-dem-cld-event-leads-{worker,web}` roles.
-   The worker role can read and write; the web role can only read.
-2. Check that the role ARNs it prints match the `awsIamRoleArn` values in
-   `deploy/demo-project.yaml`.
-3. The roles trust every `tmprl-dem-cld-*` cluster that exists when the script runs.
-   Run it again whenever a platform cluster is added or replaced, or the pods can't
-   get AWS credentials. Running it again is safe.
+1. In the platform repo, set `WRITES_PAUSED` to `"true"` on both components. Merge,
+   and wait until the rollout has replaced both pods (`kubectl get pods` shows new ages).
+2. Check that changes are refused: submitting a form shows "Changes are paused for
+   maintenance. Please retry in a few minutes.", and reads still work.
+3. Note the time. Flight passes issued before the freeze must expire (30 minutes)
+   before step 3.1, which moves the worker off the queue they run on.
 
-## Phase A: copy
+## 2. Terminate and copy
 
-1. Merge and publish PR A (`deploy/publish.sh` copies `deploy/demo-project.yaml`).
-2. When the rollout is healthy, run the backfill:
+1. Terminate the event, shard, and alias workflows. Flight passes keep running:
 
    ```sh
-   bin/tracker backfill
-   ```
-
-   It prints a report and exits non-zero if any event failed or doesn't match:
-
-   ```json
-   {"imported": 12, "unchanged": 0, "verified": 0, "noted": [ ... ]}
-   ```
-
-   - `imported` events were written; `unchanged` ones already matched their revision.
-   - `noted` lists events that copied but needed reconciling, such as a participant
-     found in two shards during a relocation or an alias another event now owns.
-     Read them; none of them lose data.
-   - `problems` lists events that failed or don't match. Fix the cause (usually a
-     worker that wasn't reachable) and run it again. An event that has left retention
-     can't be copied: check whether it matters before continuing.
-3. Run it again whenever you like; each run copies only events that changed.
-
-## Freeze
-
-Pick a time when no event is open (no event's last day is today or later in UTC):
-an attendee who submits during the freeze sees the error and has to submit again.
-
-1. Set `WRITES_PAUSED` to `"true"` on both components in `deploy/demo-project.yaml`
-   and publish. Wait for the rollout to finish.
-2. Confirm that only the new pods poll the queue. Every poller listed should have
-   started after the rollout:
-
-   ```sh
-   temporal task-queue describe --task-queue event-leads-unversioned
-   ```
-
-3. Check that changes are refused. This should fail with `type: Paused`:
-
-   ```sh
-   temporal workflow update execute -w event/<any running event> --name banner -i '"check"'
-   ```
-
-4. Terminate the event, shard, and alias workflows. Flight passes keep running:
-
-   ```sh
-   temporal workflow terminate --reason "storage cut-over" \
+   temporal workflow terminate --namespace tmprl-dem-cld-event-leads.<account> --reason "storage cut-over" \
      --query "WorkflowType IN ('EventWorkflow','ParticipantShardWorkflow','EventAliasWorkflow') AND ExecutionStatus='Running'"
    ```
 
-5. Run the final copy and the check. Queries still work on terminated workflows,
-   and the check must report no problems:
+2. Copy one last time, then check. Queries still work on terminated workflows; the
+   check must report no problems:
 
    ```sh
-   bin/tracker backfill
-   bin/tracker backfill --verify-only
+   kubectl --context blue -n <namespace> exec deploy/<worker> -- /tracker backfill
+   kubectl --context blue -n <namespace> exec deploy/<worker> -- /tracker backfill --verify-only
    ```
 
-6. Wait 30 minutes so any flight passes issued before the freeze expire.
+## 3. Switch
 
-## Phase B: switch
+1. Once 30 minutes have passed since the freeze, change the platform manifest to
+   match `deploy/demo-project.yaml` from PR B, but keep `WRITES_PAUSED` at `"true"` on
+   both components. That moves both components and the Nexus endpoint to the
+   `event-leads-store` task queue, and gives web its read-only role and the table.
+   Merge, and wait for the rollout. The code is still PR A's, which ignores the
+   new web settings and has nothing to run on the new queue.
+2. Merge PR B. The platform rebuilds and rolls it out, still paused. Check:
+   - The worker logs `worker started` with `taskQueue=event-leads-store`.
+   - `event-reconciler` and a running `event/<id>` for every open event are in the
+     Temporal UI within a minute.
+   - The directory, each event's participants, and its CSV match the table.
+3. Set `WRITES_PAUSED` to `"false"` on both components in the platform manifest and
+   merge. After the rollout, submit a test response and delete it with its event, or
+   use a test event.
 
-Publish PR B with `WRITES_PAUSED` back at `"false"`. Its worker uses a new task queue,
-so it never runs the terminated histories, and its reconciler restarts every open
-event from the table. Then check the directory, an event's participants and CSV
-against the final `--verify-only` run, and submit a test response.
+If step 3.2 goes wrong, revert PR B on `main`. The platform rolls PR A back out on the
+new queue. PR A's pages read through workflow Queries, and the terminated workflows
+have no worker on the old queue to answer them, so pages can't load event data until
+PR B is fixed and merged. Nothing in the table changes, and nothing is lost.
 
 ## Rehearse locally
 
-The same steps work against `make preview`. The rehearsal for PR A created events,
-submissions, a renamed link, an internal-only response, and a soft-deleted event;
-confirmed that verify-only flags a change made after the copy; restarted with
-`WRITES_PAUSED=true`; terminated with the query above; and verified all events
-from the terminated histories. Point the CLI at the preview with
-`--address 127.0.0.1:7234`. If your Temporal CLI profile enables TLS or a login,
-add `TEMPORAL_CONFIG_FILE=/dev/null` in front of each command.
+The whole sequence has been rehearsed with two local builds: PR A from `main` and
+PR B from its branch. Both used one Temporal dev server and DynamoDB Local, with
+different task queues. The steps:
+
+1. With PR A, create events, submissions, a resubmission, a renamed link, an
+   internal-only response, and a soft-deleted event. Run the backfill.
+2. Restart PR A with `WRITES_PAUSED=true`. Check that a submission gets 503.
+3. Terminate with the query above (scoped to the rehearsal's task queue). Run the
+   backfill and `--verify-only`.
+4. Start PR B, still paused, on the new queue. The reconciler starts the open events,
+   but not the deleted one. Reads, links, and counts all come from the table.
+5. Restart PR B unpaused and check:
+   - The CSV is identical to the one exported before the freeze.
+   - A new submission through the renamed link works.
+   - A pre-freeze request ID is still acknowledged, and reusing it with new details is refused.
+   - The internal-only event refuses a second response.
+   - An edit saves.
+   - Creating an event with a taken name gets the `-2` suffix.
+
+Point the Temporal CLI at a local server with `--address 127.0.0.1:<port>`. If your
+CLI profile enables TLS or a login, add `TEMPORAL_CONFIG_FILE=/dev/null` in front of
+each command.
