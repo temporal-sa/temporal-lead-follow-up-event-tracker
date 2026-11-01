@@ -1,9 +1,11 @@
 # Event Lead Tracker
 
 A small mobile-friendly event follow-up form. Temporal employees manage events,
-display QR codes, view participants, and export CSV. All durable application state
-lives in Temporal: there is no database, disk-backed application store, or server
-session store.
+display QR codes, view participants, and export CSV. Each event is a Temporal
+Workflow that owns it and is the only writer to its permanent record in DynamoDB.
+The web server and the Nexus service read that record; they never write it. It
+outlives the Temporal namespace: after a reset, the worker restarts every open
+event from it. There is no server session store.
 
 ## Run locally
 
@@ -52,12 +54,14 @@ make vet
 make build
 ```
 
-The optional server-backed integration tests exercise worker restart, actual
-Continue-As-New, retained queries, sharding, and history replay. Against an
-isolated local dev server, run:
+The store tests need DynamoDB Local. The integration test runs the app through
+its HTTP API against a real Temporal server and DynamoDB Local, including a
+simulated namespace reset:
 
 ```sh
-TEMPORAL_INTEGRATION_ADDRESS=localhost:7233 go test ./internal/tracker -run TestIntegration -v
+docker run --rm -p 8765:8000 amazon/dynamodb-local:2.5.4 -jar DynamoDBLocal.jar -inMemory -sharedDb
+DYNAMODB_INTEGRATION_ENDPOINT=http://localhost:8765 go test ./internal/store
+TEMPORAL_INTEGRATION_ADDRESS=localhost:7233 DYNAMODB_INTEGRATION_ENDPOINT=http://localhost:8765 go test ./internal/web -run TestIntegration -v
 ```
 
 The binary supports `serve`, `worker`, and `dev`. `serve` is the default. In
@@ -67,13 +71,13 @@ deployment, run `serve` and `worker` as separate components from the same image.
 
 Create an event with a name, optional description, and required end date in UTC.
 The event's link is its normalized name: "KubeCon 2026" opens at `/kubecon-2026`.
-If another running or retained event already uses that slug, the next free
+If another event, or one of its links, already uses that slug, the next free
 suffix is used (`/kubecon-2026-2`). Slugs are at most 39 characters so the QR
 code keeps its capacity; names without ASCII letters or digits, or that match
 an app path such as `admin`, get a suffix or a random ID. Events created before
 slugs keep their random IDs, and `/events/{id}` links keep working.
 An end date of October 7 closes submissions at October 8, 00:00:00 UTC. The event
-and participant workflows complete seven days later, October 15, 00:00:00 UTC.
+workflow completes seven days later, October 15, 00:00:00 UTC.
 Ending manually closes submissions immediately without shortening that scheduled
 completion deadline. Events cannot reopen. New workflow runs use a single timer
 for completion; submission updates enforce the cutoff when they arrive, and the
@@ -93,11 +97,9 @@ questions, QR banner, and link preview filled in and the end date left blank.
 Change an event's link under **Event link**. The new slug follows the same rules as
 creation. Every earlier link, including the original, keeps opening the same event,
 so printed QR codes and open browser tabs keep working; new QR codes use the
-current link. An event can hold up to 10 links besides its original. Each extra
-link is reserved by an `EventAliasWorkflow` with the Workflow ID `event/{slug}`, so
-no other event can take it, and it completes with its event. All of an event's
-links are released together when Temporal retention removes them. Renaming an
-event does not change its link.
+current link. An event can hold up to 10 links besides its original. Each link is
+reserved in the store, so no other event can take it, and it's never released,
+even after the event is deleted. Renaming an event does not change its link.
 
 New events start with a form template containing name, title / role, email, and
 an optional follow-up reason. Customize the questions when creating an event:
@@ -168,41 +170,57 @@ carry the preview.
 
 Emails are trimmed and lowercased; the newest submission replaces the
 existing participant's details within that event. The same person may join
-different events. Employees can view and export during the event, after submissions
-close, and after workflows complete, while their histories remain in Temporal
-retention. The seven-day completion timer never disables viewing or export.
-Exports include all configured questions in form order, with stable question IDs
-in column headers; grids have a column per row. Checkbox answers use JSON arrays
-inside CSV cells to preserve individual selections. Exports fail explicitly if
-any participant shard is unavailable.
+different events. Employees can view and export at any time: during the event,
+after submissions close, and after the workflow completes, because responses are
+kept in the store. The participant table and the export list participants in the
+order they first responded. Exports include all configured questions in form
+order, with stable question IDs in column headers; grids have a column per row.
+Checkbox answers use JSON arrays inside CSV cells to preserve individual
+selections.
 
-No automatic emails, contacted/pending status, or external CSV storage are
-included. A future CSV-storage Activity can be added before final completion;
-that change requires replay-compatible versioning for existing workflows.
+**Delete event** hides the event, its form, and its QR code, at any stage. Its
+responses stay in the store, so a deletion can be undone by hand, and its links
+stay reserved. A deleted event that hasn't completed keeps its workflow until its
+completion time, rejecting every change.
+
+No automatic emails or contacted/pending status are included.
 
 ## Workflow design
 
-`EventWorkflow` owns metadata, UTC timers, counts, and shard references. It
-serializes participant submissions and awaits confirmed shard writes before
-acknowledging success. `ParticipantShardWorkflow` children hold participant
-records, up to 5,000 unique emails or a 1 MiB serialized state budget. New shards
-are created automatically; a growing repeat submission may relocate to a new
-shard. Activity writes carry monotonically increasing sequence numbers so old
-attempts cannot overwrite newer data. Reads and exports verify the coordinator's
-revision and busy flag to avoid incomplete or duplicate data during relocation.
-The coordinator carries receipts for the most recent 1,024 accepted submissions
-across Continue-As-New, so a retried older HTTP request in that window cannot
-replace newer details. Beyond that window a replayed request is treated as a new
-submission; the email still deduplicates to one participant.
+`EventWorkflow` owns one event: its details, its form, its timer, and the order
+of every change to it. The store (`internal/store`, one DynamoDB table) holds the
+event, its participants, a receipt for every accepted submission, and its links.
+The workflow is the store's only writer, through Activities, and stores each
+change before acknowledging it. The web server reads the store and sends every
+change as an Update; its IAM role can only read the table.
 
-Changing the end date wakes the completion wait, which starts a new timer for the
-new completion time. A run whose end date never changes starts one timer, exactly
-as before, so existing histories replay unchanged. `EventWorkflow` starts each
-`EventAliasWorkflow` as an `ABANDON` child inside the `slug` Update, with
-`REJECT_DUPLICATE`, so the reservation and the event's record of it are one step.
-An alias answers the `event` Query with only its event's ID, and every lookup
-follows it once to the event. Submissions and edits made through any link are sent
-to the event's own Workflow.
+Creating an event is an Update-with-Start: the API starts `event/{slug}` and sends
+it the `create` Update in one call. The Update's Activity stores the event and
+reserves its slug as a link in one transaction; a taken slug fails it, and the API
+tries the next suffix. Every other run starts by claiming the stored event: it
+loads the event and increments its epoch. Every store write is conditioned on the
+writer's epoch and the event's revision, so a retried write repeats harmlessly and
+a write from an earlier run (left over after Continue-As-New, a terminate, or a
+reset) is refused. A run whose write is refused stops.
+
+Submissions are serialized by a workflow mutex. Each one looks up the person's
+row and the request ID's receipt, then writes the participant, the receipt, and
+the event's new count in one transaction. A retried request is acknowledged from
+its receipt at any time, even after the event closes; a request ID reused with
+different details is refused. An internal-only event takes one response per
+employee.
+
+Changing the end date wakes the completion wait, which starts a new timer.
+`EventWorkflow` continues as new when Temporal suggests it; the next run claims
+the event again, so nothing is carried across. At completion it saves once more
+to take the event off the store's list of open events.
+
+`ReconcileWorkflow` keeps a workflow running for every open event, that is, every
+event that isn't deleted and hasn't completed. Each worker starts it when it
+boots, and it checks every five minutes. After a namespace reset, its first pass
+restarts every open event from the store; until then, reads work and changes
+answer "Event is starting. Please retry shortly." It never starts a second run
+beside a running one, and never restarts an event that completed.
 
 Making an existing event internal-only is the `internalOnly` Update. It carries the
 form along with the flag, so the event never requires sign-in without the Name and
@@ -210,23 +228,9 @@ Email questions the sign-in answers. The server's `POST /api/admin/events/{id}/f
 sends it instead of the `form` Update when the request sets `internalOnly` on a
 public event.
 
-Both workflow types Continue-As-New when Temporal suggests it (at about 4 MB or
-4K events of history, or 90% of the Update limit). The coordinator's history
-records each submission, but only for the current run; its locate step returns
-the participant's shard and a digest of their answers, not the answers
-themselves. Participant children have `ABANDON` parent-close policy and stable
-IDs; they remain alive when the coordinator continues. At final completion, the
-coordinator signals each shard to finish after its handlers drain. Temporal
-Visibility supplies the employee event directory, so newly created events may
-take a moment to appear there; direct links work immediately. The directory
-includes running and successfully completed events. Terminated, canceled, failed,
-timed-out, and continued-as-new runs are excluded. Workflow queries time out
-after five seconds, and a directory request is limited to ten seconds.
-
-The 5,000 limit counts unique participants, not repeat submissions. Text-heavy
-events shard earlier to stay below Temporal payload limits. Participant and event
-data are stored in workflow histories; anyone with Temporal namespace access can
-inspect them. Deploy this in a namespace appropriate for lead data.
+Participant and event data are in the store and in workflow histories (Activity
+inputs carry the details being written); anyone with access to either can read
+them. Deploy this in an account and namespace appropriate for lead data.
 
 ## Configuration
 
@@ -245,10 +249,10 @@ inspect them. Deploy this in a namespace appropriate for lead data.
 | `AUTH_VERIFY_URL` | `https://catalog.tmprl-demo.cloud/_auth/verify`; trusted catalog verifier endpoint |
 | `DEV_AUTH_EMAIL` | Explicit local-only employee identity |
 | `TEMPORAL_DEPLOYMENT_NAME`, `TEMPORAL_WORKER_BUILD_ID` | Set together to enable pinned Worker Deployment Versioning |
-| `EVENT_LEADS_TABLE` | Required by the worker: the DynamoDB table that permanently stores events |
-| `DYNAMODB_ENDPOINT` | DynamoDB Local URL; when set, the worker creates the table on start. Unset uses AWS |
+| `EVENT_LEADS_TABLE` | Required: the DynamoDB table that permanently stores events |
+| `DYNAMODB_ENDPOINT` | DynamoDB Local URL; when set, the app creates the table on start. Unset uses AWS |
 | `AWS_REGION` | Region of the table; credentials come from the AWS default chain (IRSA in deployment) |
-| `WRITES_PAUSED` | `false`; `true` rejects every change for the storage cut-over (see [docs/storage-cutover.md](docs/storage-cutover.md)) |
+| `WRITES_PAUSED` | `false`; `true` rejects every change, for maintenance such as the storage cut-over ([docs/storage-cutover.md](docs/storage-cutover.md)) |
 
 Employee authentication sends only the catalog's `temporal_demo_auth` cookie to
 the configured catalog verifier, which validates the session. The app requires
@@ -267,7 +271,7 @@ form, even if the visitor is an authenticated employee.
 For a different catalog deployment, set both `AUTH_BASE_URL` and `AUTH_VERIFY_URL`
 to its login origin and verifier endpoint.
 
-`GET /healthz` checks the HTTP process. `GET /readyz` checks its Temporal connection.
+`GET /healthz` checks the HTTP process. `GET /readyz` checks its Temporal connection and the table.
 The worker logs to stdout and shuts down gracefully on SIGINT/SIGTERM.
 
 ## tmprl-demo.cloud deployment
@@ -276,17 +280,14 @@ The worker logs to stdout and shuts down gracefully on SIGINT/SIGTERM.
 It exposes the web component publicly (`temporalAuthRequired: false`) so visitors
 can submit without employee login; the application protects admin pages and APIs.
 The platform injects Temporal credentials. The demo uses an unversioned worker
-on the stable `event-leads-unversioned` task queue. Catalog rollouts replace the
-runtime namespace, so pinned workers would strand events and retained queries
-when their old namespace is removed. The fresh task queue also avoids the previous
-queue's versioned routing configuration.
-The runtime namespace is the project's Kubernetes namespace. The Temporal
+on the `event-leads-store` task queue, which the Nexus endpoint also targets.
+Catalog rollouts replace the project's Kubernetes namespace; the Temporal
 namespace is per project and is removed when the catalog entry is finalized, its
-region changes, or its auth mode changes. Events are moving to a DynamoDB table
-created outside the catalog by [deploy/create-store.sh](deploy/create-store.sh)
-so they survive that; [docs/storage-cutover.md](docs/storage-cutover.md) is the
-migration runbook. The worker reaches the table through the IAM role in
-`awsIamRoleArn`.
+region changes, or its auth mode changes. The event table lives outside the
+catalog, so neither touches it: [deploy/create-store.sh](deploy/create-store.sh)
+creates it and the components' IAM roles in the demo AWS account, and the
+manifest names the roles in `awsIamRoleArn`. Run the script again when a platform
+cluster is added or replaced, so the roles trust its OIDC provider.
 The sample points `AUTH_VERIFY_URL` at the catalog's internal Kubernetes service.
 Employee login still uses the public catalog URL. No project auth secret is needed.
 
@@ -305,15 +306,12 @@ Before applying the manifest:
    the serving web and worker images and their readiness.
 
 The app does not create OAuth clients or issue its own employee sessions. Shared
-SSO requires the deployed hostname to be under `.tmprl-demo.cloud`. Completed
-workflow queries require a compatible worker, even during retention. Keep changes
-replay-compatible with existing histories, and check them with the recorded-history
-replay tests.
+SSO requires the deployed hostname to be under `.tmprl-demo.cloud`. The worker is
+unversioned, so new worker code replays the histories of running events. Keep
+changes replay-compatible, and check them with the recorded-history replay tests.
 The optional `TEMPORAL_REPLAY_HISTORY` test replays downloaded history files; list
 several separated by `:`, for example
 `TEMPORAL_REPLAY_HISTORY=$(ls ~/Downloads/*_events.json | paste -sd: -) go test ./internal/tracker -run TestReplay -v`.
-Previously pinned workflows still require their original worker deployment;
-changing the task queue does not migrate those executions.
 
 This repository prepares deployment artifacts; it does not change cluster-gitops
 or deploy infrastructure automatically.
