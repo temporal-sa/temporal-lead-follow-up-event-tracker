@@ -2,52 +2,102 @@ package tracker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	enums "go.temporal.io/api/enums/v1"
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/temporal"
 )
 
 type Activities struct {
-	Client  client.Client
-	Archive Archive
+	Client    client.Client
+	Store     Store
+	TaskQueue string
 }
 
-func (a *Activities) LocateLead(ctx context.Context, input LocateInput) (LocatedLead, error) {
-	id, lead, err := FindLead(ctx, a.Client, input.Shards, input.Email)
-	if err != nil || lead == nil {
-		return LocatedLead{}, err
+type SlugWrite struct {
+	State EventState `json:"state"`
+	Slug  string     `json:"slug"`
+}
+
+type LookupInput struct {
+	EventID   string `json:"eventId"`
+	Email     string `json:"email"`
+	RequestID string `json:"requestId"`
+}
+
+type SubmissionWrite struct {
+	State   EventState `json:"state"`
+	Lead    Lead       `json:"lead"`
+	Receipt Receipt    `json:"receipt"`
+}
+
+// storeError turns the store's definite answers into errors a retry can't change.
+func storeError(err error) error {
+	switch {
+	case errors.Is(err, ErrTaken):
+		return temporal.NewNonRetryableApplicationError(err.Error(), "Taken", nil)
+	case errors.Is(err, ErrFenced):
+		return temporal.NewNonRetryableApplicationError(err.Error(), "Fenced", nil)
+	case errors.Is(err, ErrNotStored):
+		return temporal.NewNonRetryableApplicationError(err.Error(), "Missing", nil)
 	}
-	return LocatedLead{ShardID: id, Found: true, RequestID: lead.RequestID, FirstSubmittedAt: lead.FirstSubmittedAt, Digest: lead.Digest()}, nil
+	return err
 }
 
-// FindLead returns the shard holding email and the participant's full record, or a nil record.
-func FindLead(ctx context.Context, c client.Client, shards []string, email string) (string, *Lead, error) {
-	for _, id := range shards {
-		value, err := c.QueryWorkflow(ctx, id, "", "find", email)
+func (a *Activities) CreateEvent(ctx context.Context, state EventState) error {
+	return storeError(a.Store.Create(ctx, state))
+}
+
+func (a *Activities) ClaimEvent(ctx context.Context, id string) (EventState, error) {
+	state, err := a.Store.Claim(ctx, id)
+	return state, storeError(err)
+}
+
+func (a *Activities) SaveEvent(ctx context.Context, state EventState) error {
+	return storeError(a.Store.SaveEvent(ctx, state))
+}
+
+func (a *Activities) SaveSlug(ctx context.Context, write SlugWrite) error {
+	return storeError(a.Store.SaveSlug(ctx, write.State, write.Slug))
+}
+
+func (a *Activities) Lookup(ctx context.Context, input LookupInput) (Existing, error) {
+	return a.Store.Lookup(ctx, input.EventID, input.Email, input.RequestID)
+}
+
+func (a *Activities) SaveSubmission(ctx context.Context, write SubmissionWrite) error {
+	return storeError(a.Store.SaveSubmission(ctx, write.State, write.Lead, write.Receipt))
+}
+
+// StartOpenEvents starts a workflow for every stored event that should have one
+// and doesn't, such as after a namespace reset. It returns how many it checked.
+func (a *Activities) StartOpenEvents(ctx context.Context) (int, error) {
+	checked := 0
+	var failures []error
+	for cursor := ""; ; {
+		events, next, err := a.Store.OpenEvents(ctx, cursor)
 		if err != nil {
-			return "", nil, err
+			return checked, err
 		}
-		var lead *Lead
-		if err := value.Get(&lead); err != nil {
-			return "", nil, err
+		for _, event := range events {
+			if _, err := a.Client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+				ID: EventID(event.ID), TaskQueue: a.TaskQueue,
+				// A running run is the one we want. A run that was terminated (the
+				// storage cut-over) or failed is replaced; one that completed is not.
+				WorkflowIDConflictPolicy: enums.WORKFLOW_ID_CONFLICT_POLICY_USE_EXISTING,
+				WorkflowIDReusePolicy:    enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
+			}, EventType, EventInput{ID: event.ID, Hydrate: true}); err != nil {
+				failures = append(failures, fmt.Errorf("start %s: %w", event.ID, err))
+			}
+			checked++
+			activity.RecordHeartbeat(ctx, checked)
 		}
-		if lead != nil {
-			return id, lead, nil
+		if next == "" {
+			return checked, errors.Join(failures...)
 		}
+		cursor = next
 	}
-	return "", nil, nil
-}
-
-func (a *Activities) WriteLead(ctx context.Context, command WriteCommand) (WriteResult, error) {
-	// The same ID is reused for every Activity attempt, including across shard runs.
-	handle, err := a.Client.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
-		WorkflowID: command.ShardID, UpdateID: fmt.Sprintf("write-%d-%t", command.Lead.Sequence, command.Delete), UpdateName: "write",
-		Args: []any{command}, WaitForStage: client.WorkflowUpdateStageCompleted,
-	})
-	if err != nil {
-		return WriteResult{}, err
-	}
-	var result WriteResult
-	err = handle.Get(ctx, &result)
-	return result, err
 }

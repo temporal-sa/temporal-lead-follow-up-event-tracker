@@ -288,7 +288,7 @@ func (s *server) publicEvent(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		lead, err := s.gateway.FindLead(r.Context(), event.Shards, employee.Email)
+		lead, err := s.gateway.Participant(r.Context(), event.ID, employee.Email)
 		if err != nil {
 			handleError(w, err)
 			return
@@ -392,8 +392,8 @@ func (s *server) createEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	// The workflow ID reserves the slug: a running or retained event with the
-	// same ID rejects the start, so try the next suffix.
+	// The store reserves the slug: a taken one, or one whose workflow is still
+	// running, rejects the create, so try the next suffix.
 	for attempt := 0; ; attempt++ {
 		event.ID = tracker.Slug(event.Name, attempt)
 		if event.ID == "" || attempt >= maxSlugAttempts {
@@ -406,7 +406,9 @@ func (s *server) createEvent(w http.ResponseWriter, r *http.Request) {
 		}
 		err = s.gateway.Create(r.Context(), event)
 		var started *serviceerror.WorkflowExecutionAlreadyStarted
-		if !errors.As(err, &started) || attempt >= maxSlugAttempts {
+		var app *temporal.ApplicationError
+		taken := errors.As(err, &started) || (errors.As(err, &app) && app.Type() == "Taken")
+		if !taken || attempt >= maxSlugAttempts {
 			break
 		}
 	}
@@ -727,16 +729,16 @@ func handleError(w http.ResponseWriter, err error) {
 		status, message = http.StatusBadRequest, errInvalidCursor.Error()
 	case errors.Is(err, errChanged):
 		status, message = http.StatusConflict, errChanged.Error()
-	case errors.Is(err, errExpired):
-		status, message = http.StatusGone, errExpired.Error()
 	case errors.Is(err, errPaused):
 		message = errPaused.Error()
-	case errors.Is(err, errClosedDelete):
-		message = errClosedDelete.Error()
 	case errors.Is(err, errDeleted):
 		status, message = http.StatusNotFound, "This event was deleted."
+	case errors.Is(err, tracker.ErrNotStored):
+		status, message = http.StatusNotFound, "Event not found."
 	case errors.As(err, &missing):
-		status, message = http.StatusNotFound, "Event not found or no longer retained."
+		// The event is stored but its workflow isn't running yet, such as just
+		// after a namespace reset; the reconciler starts it.
+		message = "Event is starting. Please retry shortly."
 	case errors.As(err, &application):
 		switch application.Type() {
 		case "Invalid":

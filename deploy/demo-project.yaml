@@ -10,10 +10,10 @@ spec:
     title: Event Lead Tracker
     summary: >-
       Built with Go, mobile-friendly HTML forms, and QR codes. Demonstrates
-      entity Workflows that keep all application state in Temporal, sharded
-      automatically across many Workflows. Use case: capturing and exporting
-      event follow-up leads without a database.
-    tags: [Forms, Entity Workflows, Workflow Sharding]
+      entity Workflows that own each event and are the only writers to its
+      permanent DynamoDB record, which outlives the Temporal Namespace. Use
+      case: capturing and exporting event follow-up leads.
+    tags: [Forms, Entity Workflows, DynamoDB]
     temporalSdks: [Go]
     links:
       runbook:
@@ -28,7 +28,7 @@ spec:
       mode: apiKey
     nexusEndpoints:
       event-leads-participants:
-        targetTaskQueue: event-leads-unversioned
+        targetTaskQueue: event-leads-store
         allowedCallerProjects:
           - podpocalypse
   components:
@@ -36,14 +36,20 @@ spec:
       build: app
       args: [serve]
       temporalAccess: true
+      # Read-only access to the event table; created by deploy/create-store.sh.
+      awsIamRoleArn: arn:aws:iam::429214323166:role/tmprl-dem-cld-event-leads-web
       env:
         - name: PUBLIC_URL
           value: https://events.tmprl-demo.cloud
         - name: AUTH_VERIFY_URL
           value: http://web.tmprl-dem-cld-registry-operator.svc.cluster.local/_auth/verify
         - name: TEMPORAL_TASK_QUEUE
-          value: event-leads-unversioned
-        # Set to "true" on both components for the storage cut-over's freeze window (RUNBOOK.md).
+          value: event-leads-store
+        - name: EVENT_LEADS_TABLE
+          value: tmprl-dem-cld-event-leads
+        - name: AWS_REGION
+          value: us-west-1
+        # "true" on both components turns away every change, for maintenance.
         - name: WRITES_PAUSED
           value: "false"
       ports:
@@ -58,7 +64,7 @@ spec:
       awsIamRoleArn: arn:aws:iam::429214323166:role/tmprl-dem-cld-event-leads-worker
       env:
         - name: TEMPORAL_TASK_QUEUE
-          value: event-leads-unversioned
+          value: event-leads-store
         - name: EVENT_LEADS_TABLE
           value: tmprl-dem-cld-event-leads
         - name: AWS_REGION

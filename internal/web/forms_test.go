@@ -149,7 +149,7 @@ func TestCustomCSVSchemaOrderGridRowsAndSafeCells(t *testing.T) {
 		{FieldID: "needs", Values: []string{`["Docs","Training"]`, `[]`}},
 		{FieldID: "formula", Values: []string{"\t=HYPERLINK(\"evil\")"}},
 	}}
-	g := &fakeGateway{event: tracker.Event{ID: "demo", Name: "@Event", Count: 1, Shards: []string{"s0"}, Form: form}, shards: map[string][]tracker.Lead{"s0": {lead}}}
+	g := &fakeGateway{event: tracker.Event{ID: "demo", Name: "@Event", Count: 1, Form: form}, leads: []tracker.Lead{lead}}
 	w := request(t, testHandler(t, g), "GET", "/api/admin/events/demo/export.csv", "", validSession, "")
 	rows, err := csv.NewReader(strings.NewReader(w.Body.String())).ReadAll()
 	if w.Code != http.StatusOK || err != nil || len(rows) != 2 || len(rows[0]) != 13 {

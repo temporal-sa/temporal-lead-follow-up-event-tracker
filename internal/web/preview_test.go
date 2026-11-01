@@ -71,7 +71,7 @@ func TestPagesWithoutAnEventKeepTheGenericHead(t *testing.T) {
 	}{
 		{"home", "/", &fakeGateway{event: tracker.Event{ID: "demo", Name: "Conference"}}},
 		{"admin", "/admin/events/demo", &fakeGateway{event: tracker.Event{ID: "demo", Name: "Conference"}}},
-		{"missing event", "/demo", &fakeGateway{eventError: serviceerror.NewNotFound("missing")}},
+		{"missing event", "/demo", &fakeGateway{eventError: tracker.ErrNotStored}},
 		{"deleted event", "/demo", &fakeGateway{event: tracker.Event{ID: "demo", Name: "Conference", DeletedAt: &deleted}}},
 		{"Temporal unavailable", "/events/demo", &fakeGateway{eventError: serviceerror.NewUnavailable("down")}},
 	}

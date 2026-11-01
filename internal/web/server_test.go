@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -23,8 +24,9 @@ import (
 
 type fakeGateway struct {
 	event         tracker.Event
-	shards        map[string][]tracker.Lead
+	leads         []tracker.Lead
 	pageError     error
+	pageHook      bool
 	submitError   error
 	submission    *tracker.Submission
 	created       *tracker.Event
@@ -131,26 +133,31 @@ func (g *fakeGateway) Slug(_ context.Context, id, slug string) (tracker.Event, e
 	g.event.Slug = slug
 	return g.event, nil
 }
-func (g *fakeGateway) Page(_ context.Context, id string, offset, limit int) (tracker.ShardPage, error) {
+
+// Participants pages through leads; the cursor is the next index.
+func (g *fakeGateway) Participants(_ context.Context, _ string, cursor string, limit int) ([]tracker.Lead, string, error) {
 	g.pageCalls++
+	if g.queryHook != nil && g.pageHook {
+		g.queryHook(g)
+	}
 	if g.pageError != nil {
-		return tracker.ShardPage{}, g.pageError
+		return nil, "", g.pageError
 	}
-	leads, ok := g.shards[id]
-	if !ok {
-		return tracker.ShardPage{}, serviceerror.NewNotFound("missing shard")
+	start := 0
+	if cursor != "" {
+		start, _ = strconv.Atoi(cursor)
 	}
-	if offset > len(leads) {
-		return tracker.ShardPage{Total: len(leads)}, nil
+	end := min(len(g.leads), start+limit)
+	next := ""
+	if end < len(g.leads) {
+		next = strconv.Itoa(end)
 	}
-	return tracker.ShardPage{Total: len(leads), Leads: leads[offset:min(len(leads), offset+limit)]}, nil
+	return g.leads[start:end], next, nil
 }
-func (g *fakeGateway) FindLead(_ context.Context, shards []string, email string) (*tracker.Lead, error) {
-	for _, id := range shards {
-		for _, lead := range g.shards[id] {
-			if lead.Email == email {
-				return &lead, nil
-			}
+func (g *fakeGateway) Participant(_ context.Context, _ string, email string) (*tracker.Lead, error) {
+	for _, lead := range g.leads {
+		if lead.Email == email {
+			return &lead, nil
 		}
 	}
 	return nil, g.pageError
@@ -186,7 +193,7 @@ func request(t *testing.T, h http.Handler, method, path, body, token, origin str
 }
 
 func TestPublicEventDoesNotLeakEmployeeOrParticipantState(t *testing.T) {
-	event := tracker.Event{ID: "demo", Name: "Conference", Description: "Say hello", Status: "open", CreatedBy: "private@temporal.io", Shards: []string{"private-shard"}, Count: 123, Revision: 88, Busy: true}
+	event := tracker.Event{ID: "demo", Name: "Conference", Description: "Say hello", Status: "open", CreatedBy: "private@temporal.io", Count: 123, Revision: 88}
 	g := &fakeGateway{event: event}
 	w := request(t, testHandler(t, g), "GET", "/api/events/demo", "", "", "")
 	if w.Code != http.StatusOK {
@@ -199,7 +206,7 @@ func TestPublicEventDoesNotLeakEmployeeOrParticipantState(t *testing.T) {
 	if len(body) != 8 {
 		t.Fatalf("public fields = %#v", body)
 	}
-	for _, key := range []string{"createdBy", "createdAt", "count", "shards", "revision", "busy", "completesAt", "qrBanner"} {
+	for _, key := range []string{"createdBy", "createdAt", "count", "revision", "completesAt", "qrBanner"} {
 		if _, ok := body[key]; ok {
 			t.Errorf("public event leaked %s", key)
 		}
@@ -285,7 +292,7 @@ func TestAdminPagesRedirectAndSessionUsesCatalogReturnTo(t *testing.T) {
 	}
 }
 
-func TestLeadPaginationAndCSVAcrossShards(t *testing.T) {
+func TestLeadPaginationAndCSV(t *testing.T) {
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	first := make([]tracker.Lead, 101)
 	for i := range first {
@@ -294,7 +301,7 @@ func TestLeadPaginationAndCSVAcrossShards(t *testing.T) {
 	first[0].Name = "  =SUM(1,2)"
 	first[0].Reason = "hello,\nworld"
 	second := []tracker.Lead{{Name: "Second", Role: "@formula", Email: "second@example.com", FirstSubmittedAt: now, LastSubmittedAt: now}}
-	g := &fakeGateway{event: tracker.Event{ID: "demo", Name: "Demo", EndDate: "2026-10-07", Count: 102, Revision: 4, Shards: []string{"s0", "s1"}}, shards: map[string][]tracker.Lead{"s0": first, "s1": second}}
+	g := &fakeGateway{event: tracker.Event{ID: "demo", Name: "Demo", EndDate: "2026-10-07", Count: 102, Revision: 4}, leads: append(first, second...)}
 	h, token := testHandler(t, g), validSession
 	w := request(t, h, "GET", "/api/admin/events/demo/participants", "", token, "")
 	var page struct {
@@ -324,10 +331,10 @@ func TestLeadPaginationAndCSVAcrossShards(t *testing.T) {
 	}
 }
 
-func TestChangedSnapshotAndMissingShardNeverExportPartialCSV(t *testing.T) {
+func TestChangedSnapshotNeverExportsPartialCSV(t *testing.T) {
 	token := validSession
 	makeGateway := func() *fakeGateway {
-		return &fakeGateway{event: tracker.Event{ID: "demo", Count: 1, Revision: 2, Shards: []string{"s0"}}, shards: map[string][]tracker.Lead{"s0": {{Name: "One"}}}}
+		return &fakeGateway{event: tracker.Event{ID: "demo", Count: 1, Revision: 2}, leads: []tracker.Lead{{Name: "One"}}}
 	}
 	g := makeGateway()
 	g.queryHook = func(g *fakeGateway) {
@@ -346,9 +353,9 @@ func TestChangedSnapshotAndMissingShardNeverExportPartialCSV(t *testing.T) {
 		t.Fatalf("unstable CSV exported: %d %s", w.Code, w.Body.String())
 	}
 	g = makeGateway()
-	g.pageError = serviceerror.NewNotFound("retention")
+	g.pageError = errors.New("store unavailable")
 	w = request(t, testHandler(t, g), "GET", "/api/admin/events/demo/export.csv", "", token, "")
-	if w.Code != 410 || strings.Contains(w.Body.String(), "event_id") {
+	if w.Code != 503 || strings.Contains(w.Body.String(), "event_id") {
 		t.Fatalf("partial CSV exported: %d %s", w.Code, w.Body.String())
 	}
 	g = makeGateway()
@@ -357,28 +364,23 @@ func TestChangedSnapshotAndMissingShardNeverExportPartialCSV(t *testing.T) {
 	if w.Code != 409 {
 		t.Fatalf("mismatched count exported: %d", w.Code)
 	}
+	// A submission between reading the event and reading a participant page.
 	g = makeGateway()
-	g.event.Count = 2
-	g.shards["s0"] = append(g.shards["s0"], g.shards["s0"][0])
-	w = request(t, testHandler(t, g), "GET", "/api/admin/events/demo/export.csv", "", token, "")
-	if w.Code != 409 {
-		t.Fatalf("duplicated participant exported: %d", w.Code)
-	}
-	g = makeGateway()
-	g.event.Busy = true
+	g.pageHook = true
+	g.queryHook = func(g *fakeGateway) { g.event.Revision++ }
 	w = request(t, testHandler(t, g), "GET", "/api/admin/events/demo/participants", "", token, "")
-	if w.Code != 409 || g.pageCalls != 0 {
-		t.Fatal("read while mutation in progress")
+	if w.Code != 409 {
+		t.Fatalf("participants changed mid-read were returned: %d", w.Code)
 	}
 }
 
 func TestCursorRejectsChangedEvent(t *testing.T) {
-	event := tracker.Event{ID: "demo", Revision: 4, Shards: []string{"s0"}}
-	cursor := encodeLeadCursor(leadCursor{EventID: "demo", Revision: 3})
+	event := tracker.Event{ID: "demo", Revision: 4}
+	cursor := encodeLeadCursor(leadCursor{EventID: "demo", Revision: 3, Key: "k"})
 	if _, err := decodeLeadCursor(cursor, event); !errors.Is(err, errChanged) {
 		t.Fatalf("stale cursor accepted: %v", err)
 	}
-	cursor = encodeLeadCursor(leadCursor{EventID: "other", Revision: 4})
+	cursor = encodeLeadCursor(leadCursor{EventID: "other", Revision: 4, Key: "k"})
 	if _, err := decodeLeadCursor(cursor, event); !errors.Is(err, errInvalidCursor) {
 		t.Fatalf("cross-event cursor accepted: %v", err)
 	}
@@ -388,7 +390,7 @@ func TestTemporalErrorMapping(t *testing.T) {
 	tests := []struct {
 		err    error
 		status int
-	}{{temporal.NewApplicationError("closed", "Closed"), 410}, {temporal.NewApplicationError("invalid", "Invalid"), 400}, {temporal.NewApplicationError("refreshing", "Refreshing"), 503}, {temporal.NewApplicationError("paused", "Paused"), 503}, {serviceerror.NewNotFound("missing"), 404}, {context.DeadlineExceeded, 503}}
+	}{{temporal.NewApplicationError("closed", "Closed"), 410}, {temporal.NewApplicationError("invalid", "Invalid"), 400}, {temporal.NewApplicationError("refreshing", "Refreshing"), 503}, {temporal.NewApplicationError("paused", "Paused"), 503}, {tracker.ErrNotStored, 404}, {serviceerror.NewNotFound("workflow not running"), 503}, {context.DeadlineExceeded, 503}}
 	for _, tt := range tests {
 		w := httptest.NewRecorder()
 		handleError(w, tt.err)
