@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/temporal-sa/temporal-lead-follow-up-event-tracker/internal/tracker"
-	commonpb "go.temporal.io/api/common/v1"
 	enums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
@@ -159,18 +158,9 @@ func (g *temporalGateway) Delete(ctx context.Context, id string) error {
 		}
 		return handle.Get(ctx, &event)
 	}
-	// Aliases go first so a failed attempt can be retried through the event's own slug.
-	for _, slug := range append(event.Aliases, event.ID) {
-		_, err = g.client.WorkflowService().DeleteWorkflowExecution(ctx, &workflowservice.DeleteWorkflowExecutionRequest{
-			Namespace:         g.namespace,
-			WorkflowExecution: &commonpb.WorkflowExecution{WorkflowId: tracker.EventID(slug)},
-		})
-		var missing *serviceerror.NotFound
-		if err != nil && !errors.As(err, &missing) {
-			return err
-		}
-	}
-	return nil
+	// Removing a closed event's histories would leave it in the archive the
+	// storage cut-over is copying them to, so it would come back afterwards.
+	return errClosedDelete
 }
 
 func (g *temporalGateway) End(ctx context.Context, id string) (tracker.Event, error) {
@@ -259,4 +249,6 @@ var (
 	errChanged       = errors.New("participants changed; reload the list or retry the export")
 	errExpired       = errors.New("event participant data is no longer available in Temporal retention")
 	errDeleted       = errors.New("this event was deleted")
+	errPaused        = errors.New("Changes are paused for maintenance. Please retry in a few minutes.")
+	errClosedDelete  = errors.New("Ended events can't be deleted until the storage migration finishes.")
 )

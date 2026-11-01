@@ -35,6 +35,8 @@ type Config struct {
 	AuthBaseURL   string
 	AuthVerifyURL string
 	DevAuthEmail  string
+	// WritesPaused turns away every change during the storage cut-over; reads keep working.
+	WritesPaused bool
 }
 
 type server struct {
@@ -101,17 +103,17 @@ func newHandler(config Config, gateway Gateway, authTransport http.RoundTripper)
 	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("GET /api/session", s.session)
 	mux.HandleFunc("GET /api/events/{id}", s.publicEvent)
-	mux.HandleFunc("POST /api/events/{id}/participants", s.submit)
+	mux.HandleFunc("POST /api/events/{id}/participants", s.writes(s.submit))
 	mux.HandleFunc("GET /api/admin/events", s.admin(s.listEvents))
-	mux.HandleFunc("POST /api/admin/events", s.admin(s.createEvent))
+	mux.HandleFunc("POST /api/admin/events", s.admin(s.writes(s.createEvent)))
 	mux.HandleFunc("GET /api/admin/events/{id}", s.admin(s.adminEvent))
-	mux.HandleFunc("POST /api/admin/events/{id}/end", s.admin(s.endEvent))
-	mux.HandleFunc("POST /api/admin/events/{id}/delete", s.admin(s.deleteEvent))
-	mux.HandleFunc("POST /api/admin/events/{id}/banner", s.admin(s.banner))
-	mux.HandleFunc("POST /api/admin/events/{id}/preview", s.admin(s.preview))
-	mux.HandleFunc("POST /api/admin/events/{id}/form", s.admin(s.form))
-	mux.HandleFunc("POST /api/admin/events/{id}/details", s.admin(s.details))
-	mux.HandleFunc("POST /api/admin/events/{id}/slug", s.admin(s.slug))
+	mux.HandleFunc("POST /api/admin/events/{id}/end", s.admin(s.writes(s.endEvent)))
+	mux.HandleFunc("POST /api/admin/events/{id}/delete", s.admin(s.writes(s.deleteEvent)))
+	mux.HandleFunc("POST /api/admin/events/{id}/banner", s.admin(s.writes(s.banner)))
+	mux.HandleFunc("POST /api/admin/events/{id}/preview", s.admin(s.writes(s.preview)))
+	mux.HandleFunc("POST /api/admin/events/{id}/form", s.admin(s.writes(s.form)))
+	mux.HandleFunc("POST /api/admin/events/{id}/details", s.admin(s.writes(s.details)))
+	mux.HandleFunc("POST /api/admin/events/{id}/slug", s.admin(s.writes(s.slug)))
 	mux.HandleFunc("GET /api/admin/events/{id}/participants", s.admin(s.participants))
 	mux.HandleFunc("GET /api/admin/events/{id}/export.csv", s.admin(s.export))
 	mux.HandleFunc("GET /admin/events/{id}/qr", s.admin(s.qrPage))
@@ -138,6 +140,17 @@ func newHandler(config Config, gateway Gateway, authTransport http.RoundTripper)
 		defer cancel()
 		mux.ServeHTTP(w, r.WithContext(ctx))
 	}), nil
+}
+
+// writes turns a change away while the storage cut-over has writes paused.
+func (s *server) writes(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.config.WritesPaused {
+			handleError(w, errPaused)
+			return
+		}
+		next(w, r)
+	}
 }
 
 func (s *server) loginURL(path string) string {
@@ -716,6 +729,10 @@ func handleError(w http.ResponseWriter, err error) {
 		status, message = http.StatusConflict, errChanged.Error()
 	case errors.Is(err, errExpired):
 		status, message = http.StatusGone, errExpired.Error()
+	case errors.Is(err, errPaused):
+		message = errPaused.Error()
+	case errors.Is(err, errClosedDelete):
+		message = errClosedDelete.Error()
 	case errors.Is(err, errDeleted):
 		status, message = http.StatusNotFound, "This event was deleted."
 	case errors.As(err, &missing):
@@ -730,6 +747,8 @@ func handleError(w http.ResponseWriter, err error) {
 			status, message = http.StatusConflict, "You've already responded to this event."
 		case "Refreshing":
 			message = "Event is refreshing. Please retry shortly."
+		case "Paused":
+			message = errPaused.Error()
 		}
 	}
 	if status == http.StatusServiceUnavailable {

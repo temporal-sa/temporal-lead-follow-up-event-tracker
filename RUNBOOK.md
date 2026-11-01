@@ -17,7 +17,7 @@ The demo makes three problems visible:
 - **On tmprl-demo.cloud:** open https://events.tmprl-demo.cloud/admin and sign in with your `temporal.io` account through the catalog. The attendee form and QR image are public, except that an **Internal only** event asks attendees to sign in the same way; everything under `/admin` needs that login.
   - The hosted demo holds real event leads from real events. Create a test event for the walkthrough, use a test email, and delete the event afterwards (see [Reset and tear down](#reset-and-tear-down)). Anyone with access to the project's Temporal Cloud Namespace can read submissions in Workflow histories.
   - To show the Workflows, you need access to the project's Temporal Cloud Namespace. The catalog creates it; this repo doesn't name it.
-- **To run it locally:** install Go 1.26 or later and the [Temporal CLI](https://docs.temporal.io/cli), and clone the repo. No accounts or keys are needed.
+- **To run it locally:** install Go 1.26 or later, the [Temporal CLI](https://docs.temporal.io/cli), and Docker (for DynamoDB Local), and clone the repo. No accounts or keys are needed.
 
 ## Start it
 
@@ -365,6 +365,8 @@ When someone asks what they'd change for their own system, these are the parts t
 | "Temporal is temporarily unavailable. Please retry." on the form or control panel | The Worker isn't running, so the event Workflow can't answer Queries or Updates | Start the Worker (it's part of `make preview` and `make dev`); the attendee can submit again with the same details |
 | A new event isn't in **Your events** yet | Visibility is eventually consistent | Wait a moment and reload, or use the event's direct link |
 | "Event is refreshing. Please retry shortly." | The event Workflow is about to Continue-As-New | Submit again |
+| "Changes are paused for maintenance. Please retry in a few minutes." | `WRITES_PAUSED` is on for the storage cut-over ([docs/storage-cutover.md](docs/storage-cutover.md)) | Wait for the cut-over to finish; reading and exporting still work |
+| "Ended events can't be deleted until the storage migration finishes." | The cut-over copies ended events from their histories, so deleting them is off until it's done | Delete the event after the cut-over |
 | "submissions have closed, so the end date can no longer change" | The event ended, by date or with **End event** | Click **Duplicate event** and pick a new last day |
 | "that event link is already in use" | Another event, or one still in retention, has that link | Pick a different link |
 | "an event can have at most 10 additional links" | The event has used all 10 extra links | Switch back to one of the links listed under **EVENT LINK** |

@@ -388,7 +388,7 @@ func TestTemporalErrorMapping(t *testing.T) {
 	tests := []struct {
 		err    error
 		status int
-	}{{temporal.NewApplicationError("closed", "Closed"), 410}, {temporal.NewApplicationError("invalid", "Invalid"), 400}, {temporal.NewApplicationError("refreshing", "Refreshing"), 503}, {serviceerror.NewNotFound("missing"), 404}, {context.DeadlineExceeded, 503}}
+	}{{temporal.NewApplicationError("closed", "Closed"), 410}, {temporal.NewApplicationError("invalid", "Invalid"), 400}, {temporal.NewApplicationError("refreshing", "Refreshing"), 503}, {temporal.NewApplicationError("paused", "Paused"), 503}, {serviceerror.NewNotFound("missing"), 404}, {context.DeadlineExceeded, 503}}
 	for _, tt := range tests {
 		w := httptest.NewRecorder()
 		handleError(w, tt.err)
@@ -587,5 +587,41 @@ func TestQRCodeLinksToTheCurrentSlug(t *testing.T) {
 	}
 	if encoded[0] == encoded[1] || encoded[1] != string(want) {
 		t.Fatal("QR code does not follow the current slug")
+	}
+}
+
+func TestPausedWritesAreTurnedAwayWhileReadsWork(t *testing.T) {
+	g := &fakeGateway{event: tracker.Event{ID: "demo", Name: "Demo", Status: "open"}}
+	h, err := newHandler(Config{PublicURL: "https://leads.tmprl-demo.cloud", AuthVerifyURL: verifierURL, WritesPaused: true}, g, verifierTransport(func(*http.Request) (*http.Response, error) {
+		return verifierResponse(http.StatusNoContent, "google:employee-id", "employee@temporal.io"), nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := "https://leads.tmprl-demo.cloud"
+	writes := []struct{ path, body string }{
+		{"/api/events/demo/participants", `{"name":"Ada","role":"Engineer","email":"ada@example.com","requestId":"01234567-89ab-cdef"}`},
+		{"/api/admin/events", `{"name":"Conference","endDate":"2099-01-01"}`},
+		{"/api/admin/events/demo/end", `{}`},
+		{"/api/admin/events/demo/delete", `{}`},
+		{"/api/admin/events/demo/banner", `{"banner":"Booth"}`},
+		{"/api/admin/events/demo/preview", `{"title":"Hi"}`},
+		{"/api/admin/events/demo/form", `{}`},
+		{"/api/admin/events/demo/details", `{}`},
+		{"/api/admin/events/demo/slug", `{"slug":"renamed"}`},
+	}
+	for _, write := range writes {
+		w := request(t, h, "POST", write.path, write.body, validSession, origin)
+		if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" || !strings.Contains(w.Body.String(), "paused") {
+			t.Errorf("%s: %d %s", write.path, w.Code, w.Body.String())
+		}
+	}
+	if g.created != nil || g.submission != nil || len(g.deleted)+len(g.banners)+len(g.previews)+len(g.forms)+len(g.details)+len(g.slugs) > 0 || g.endedID != "" {
+		t.Fatalf("a paused write reached the gateway: %+v", g)
+	}
+	for _, path := range []string{"/api/events/demo", "/api/admin/events/demo", "/api/admin/events"} {
+		if w := request(t, h, "GET", path, "", validSession, ""); w.Code != http.StatusOK {
+			t.Errorf("%s: %d %s", path, w.Code, w.Body.String())
+		}
 	}
 }

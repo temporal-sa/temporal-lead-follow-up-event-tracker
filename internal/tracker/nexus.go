@@ -263,6 +263,8 @@ func nexusError(err error) error {
 			return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeConflict, "%s", app.Message())
 		case "Expired":
 			return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeNotFound, "%s", app.Message())
+		case "Paused":
+			return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeUnavailable, "%s", app.Message())
 		}
 	}
 	return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeInternal, "event tracker request failed")
