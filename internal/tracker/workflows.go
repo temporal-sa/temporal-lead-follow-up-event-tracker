@@ -4,12 +4,21 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	enums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
+
+// writesPaused rejects every event change while the storage cut-over runs. Only
+// Update validators read it. The SDK doesn't run validators on replay and a
+// rejected Update is never recorded, so histories replay the same either way.
+var writesPaused atomic.Bool
+
+// PauseWrites makes this worker's events reject changes until it restarts.
+func PauseWrites() { writesPaused.Store(true) }
 
 func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 	rotating, retiring, rescheduled := false, false, false
@@ -21,7 +30,15 @@ func EventWorkflow(ctx workflow.Context, state EventState) (Event, error) {
 	if err := workflow.SetQueryHandler(ctx, "event", func() (Event, error) { return state.Event.At(workflow.Now(ctx)), nil }); err != nil {
 		return Event{}, err
 	}
+	// The backfill reads the sequence and receipts too. Registering an additional
+	// handler emits no commands and preserves existing histories.
+	if err := workflow.SetQueryHandler(ctx, "state", func() (EventState, error) { return state, nil }); err != nil {
+		return Event{}, err
+	}
 	validator := func() error {
+		if writesPaused.Load() {
+			return temporal.NewApplicationError("changes are paused for maintenance; retry in a few minutes", "Paused")
+		}
 		if rotating {
 			return temporal.NewApplicationError("event is refreshing; retry shortly", "Refreshing")
 		}

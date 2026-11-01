@@ -7,7 +7,10 @@ import (
 	"go.temporal.io/sdk/client"
 )
 
-type Activities struct{ Client client.Client }
+type Activities struct {
+	Client  client.Client
+	Archive Archive
+}
 
 func (a *Activities) LocateLead(ctx context.Context, input LocateInput) (LocatedLead, error) {
 	id, lead, err := FindLead(ctx, a.Client, input.Shards, input.Email)

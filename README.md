@@ -7,7 +7,7 @@ session store.
 
 ## Run locally
 
-Requirements: Go 1.26 or newer and the Temporal CLI.
+Requirements: Go 1.26 or newer, the Temporal CLI, and Docker (for DynamoDB Local).
 
 For a complete local preview, including a persistent local Temporal server,
 worker, and employee control panel:
@@ -17,9 +17,10 @@ make preview
 ```
 
 Open http://localhost:8080/admin. The preview uses its own Temporal server on
-port 7234 (UI on 8234), ignores inherited Cloud credentials, and stores Temporal
-data under `.local/preview/`. Stop it with Ctrl+C. To change ports, set
-`PREVIEW_PORT`, `PREVIEW_TEMPORAL_PORT`, and `PREVIEW_TEMPORAL_UI_PORT`.
+port 7234 (UI on 8234) and DynamoDB Local in Docker on port 8235, ignores
+inherited Cloud credentials, and stores both under `.local/preview/`. Stop it
+with Ctrl+C. To change ports, set `PREVIEW_PORT`, `PREVIEW_TEMPORAL_PORT`,
+`PREVIEW_TEMPORAL_UI_PORT`, and `PREVIEW_DYNAMODB_PORT`.
 
 To present the demo, follow [RUNBOOK.md](RUNBOOK.md): the walkthrough beat by beat, and where in the code each part happens.
 
@@ -35,6 +36,7 @@ temporal server start-dev --db-filename .local/temporal.db
 In another terminal:
 
 ```sh
+docker run --rm -p 8000:8000 amazon/dynamodb-local:2.5.4 -jar DynamoDBLocal.jar -sharedDb -inMemory
 make dev
 ```
 
@@ -243,6 +245,10 @@ inspect them. Deploy this in a namespace appropriate for lead data.
 | `AUTH_VERIFY_URL` | `https://catalog.tmprl-demo.cloud/_auth/verify`; trusted catalog verifier endpoint |
 | `DEV_AUTH_EMAIL` | Explicit local-only employee identity |
 | `TEMPORAL_DEPLOYMENT_NAME`, `TEMPORAL_WORKER_BUILD_ID` | Set together to enable pinned Worker Deployment Versioning |
+| `EVENT_LEADS_TABLE` | Required by the worker: the DynamoDB table that permanently stores events |
+| `DYNAMODB_ENDPOINT` | DynamoDB Local URL; when set, the worker creates the table on start. Unset uses AWS |
+| `AWS_REGION` | Region of the table; credentials come from the AWS default chain (IRSA in deployment) |
+| `WRITES_PAUSED` | `false`; `true` rejects every change for the storage cut-over (see [docs/storage-cutover.md](docs/storage-cutover.md)) |
 
 Employee authentication sends only the catalog's `temporal_demo_auth` cookie to
 the configured catalog verifier, which validates the session. The app requires
@@ -274,6 +280,13 @@ on the stable `event-leads-unversioned` task queue. Catalog rollouts replace the
 runtime namespace, so pinned workers would strand events and retained queries
 when their old namespace is removed. The fresh task queue also avoids the previous
 queue's versioned routing configuration.
+The runtime namespace is the project's Kubernetes namespace. The Temporal
+namespace is per project and is removed when the catalog entry is finalized, its
+region changes, or its auth mode changes. Events are moving to a DynamoDB table
+defined outside the catalog ([deploy/event-leads-store.tf](deploy/event-leads-store.tf))
+so they survive that; [docs/storage-cutover.md](docs/storage-cutover.md) is the
+migration runbook. The worker reaches the table through the IAM role in
+`awsIamRoleArn`.
 The sample points `AUTH_VERIFY_URL` at the catalog's internal Kubernetes service.
 Employee login still uses the public catalog URL. No project auth secret is needed.
 
