@@ -9,7 +9,7 @@ The move takes three releases, and no data is lost:
 
 | Phase | What ships | What changes for users |
 |---|---|---|
-| 0. Infrastructure | `deploy/event-leads-store.tf` in the platform repo | Nothing |
+| 0. Infrastructure | `deploy/create-store.sh` creates the table and IAM roles (done) | Nothing |
 | A. Copy | The backfill, `WRITES_PAUSED`, and a worker IAM role | Ended events can't be deleted until phase B |
 | Freeze | `WRITES_PAUSED=true`, then the old workflows are terminated | Every change returns "Changes are paused for maintenance" for the window |
 | B. Switch | Workflows write to the table; reads come from it; a reconciler restarts open events | None, apart from the participant table ordering by first response |
@@ -32,11 +32,18 @@ run the backfill as soon as possible. Repeat the backfill until the freeze.
 
 ## Phase 0: infrastructure
 
-1. Copy `deploy/event-leads-store.tf` into the platform repository's `infra/`.
-2. Run `tofu plan` and confirm it only adds the table and the two
-   `tmprl-dem-cld-event-leads-{web,worker}` roles and their policies. Then apply it.
-3. Check the outputs: `event_leads_table` is `tmprl-dem-cld-event-leads`, and the role
-   ARNs match the `awsIamRoleArn` values in `deploy/demo-project.yaml`.
+The table and roles are created directly in the demo AWS account, not through the
+platform's infrastructure, so nothing the platform does can remove them.
+
+1. With administrator access to account 429214323166, run `deploy/create-store.sh`.
+   It creates the `tmprl-dem-cld-event-leads` table (with deletion protection and
+   point-in-time recovery) and the `tmprl-dem-cld-event-leads-{worker,web}` roles.
+   The worker role can read and write; the web role can only read.
+2. Check that the role ARNs it prints match the `awsIamRoleArn` values in
+   `deploy/demo-project.yaml`.
+3. The roles trust every `tmprl-dem-cld-*` cluster that exists when the script runs.
+   Run it again whenever a platform cluster is added or replaced, or the pods can't
+   get AWS credentials. Running it again is safe.
 
 ## Phase A: copy
 

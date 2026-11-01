@@ -25,8 +25,8 @@ import (
 	"github.com/temporal-sa/temporal-lead-follow-up-event-tracker/internal/tracker"
 )
 
-// Key attribute and index names. infra/event_leads.tf in the platform repository
-// declares the same schema; EnsureTable creates it for local development.
+// Key attribute and index names. deploy/create-store.sh creates the same schema
+// in AWS; EnsureTable creates it for local development.
 const (
 	attrPK     = "pk"
 	attrSK     = "sk"
