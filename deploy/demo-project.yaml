@@ -54,7 +54,7 @@ spec:
       build: app
       args: [worker]
       worker: true
-      # Read/write access to the permanent event table; see deploy/event-leads-store.tf.
+      # Read/write access to the permanent event table; created by deploy/create-store.sh.
       awsIamRoleArn: arn:aws:iam::429214323166:role/tmprl-dem-cld-event-leads-worker
       env:
         - name: TEMPORAL_TASK_QUEUE

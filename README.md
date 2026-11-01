@@ -283,7 +283,7 @@ queue's versioned routing configuration.
 The runtime namespace is the project's Kubernetes namespace. The Temporal
 namespace is per project and is removed when the catalog entry is finalized, its
 region changes, or its auth mode changes. Events are moving to a DynamoDB table
-defined outside the catalog ([deploy/event-leads-store.tf](deploy/event-leads-store.tf))
+created outside the catalog by [deploy/create-store.sh](deploy/create-store.sh)
 so they survive that; [docs/storage-cutover.md](docs/storage-cutover.md) is the
 migration runbook. The worker reaches the table through the IAM role in
 `awsIamRoleArn`.
