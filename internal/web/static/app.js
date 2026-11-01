@@ -28,7 +28,19 @@
     app.replaceChildren(get(template).content.cloneNode(true));
     app.setAttribute("aria-busy", "false");
   };
+  // The server puts the responses of this page's first reads into the page, so
+  // they don't each cost a round trip. Each is used once; later reads, such as
+  // Refresh, fetch as usual.
+  const bootstrap = (() => {
+    try { return JSON.parse(app.dataset.bootstrap || "{}"); } catch { return {}; }
+  })();
+  delete app.dataset.bootstrap;
   const api = async (url, options = {}) => {
+    if (!options.method && Object.hasOwn(bootstrap, url)) {
+      const data = bootstrap[url];
+      delete bootstrap[url];
+      return data;
+    }
     const response = await fetch(url, { credentials: "same-origin", ...options });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -317,7 +329,7 @@
       const date = new Date(`${get("create-end-date").value}T00:00:00Z`);
       if (Number.isNaN(date.getTime())) return;
       date.setUTCDate(date.getUTCDate() + 1);
-      get("create-date-help").textContent = `Submissions close ${dateText(date)}. Responses remain available to view and export for as long as Temporal retains them.`;
+      get("create-date-help").textContent = `Submissions close ${dateText(date)}. Responses stay available to view and export after the event ends.`;
     });
     const duplicate = sessionStorage.getItem(duplicateKey);
     sessionStorage.removeItem(duplicateKey);
@@ -391,7 +403,7 @@
       get("detail-form-preview").href = formPath(link());
       let lifecycle = "";
       if (event.completesAt) {
-        lifecycle = "Responses remain available to view and export for as long as Temporal retains them.";
+        lifecycle = "Responses stay available to view and export after the event ends.";
       }
       get("detail-lifecycle").textContent = lifecycle;
       get("detail-lifecycle").hidden = !lifecycle;
@@ -401,7 +413,7 @@
       get("details-fields").disabled = event.status === "archived";
       get("detail-edit-end-date").disabled = !open;
       get("detail-edit-date-help").textContent = open
-        ? "Submissions close at midnight UTC after this date. Responses remain available to view and export for as long as Temporal retains them."
+        ? "Submissions close at midnight UTC after this date. Responses stay available to view and export after the event ends."
         : "Submissions have closed, so the end date can no longer change. To run it again, use Duplicate event.";
       get("detail-slug").disabled = get("slug-save").disabled = event.status === "archived";
       get("preview-fields").disabled = event.status === "archived";

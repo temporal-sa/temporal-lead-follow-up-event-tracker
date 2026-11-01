@@ -50,6 +50,7 @@ func NewGateway(store tracker.Reader, c client.Client, taskQueue string) Gateway
 // store reserves the ID; a taken one fails with a "Taken" error, and an ID whose
 // workflow is still running fails with WorkflowExecutionAlreadyStarted.
 func (g *gateway) Create(ctx context.Context, event tracker.Event) error {
+	defer timed(ctx, "temporal")()
 	// A fixed Update ID would match the running event's own create and report
 	// success instead of the conflict.
 	var token [16]byte
@@ -75,6 +76,7 @@ func (g *gateway) Create(ctx context.Context, event tracker.Event) error {
 }
 
 func (g *gateway) List(ctx context.Context, cursor string) ([]tracker.Event, string, error) {
+	defer timed(ctx, "store")()
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	events, next, err := g.store.Events(ctx, cursor)
@@ -90,6 +92,7 @@ func (g *gateway) List(ctx context.Context, cursor string) ([]tracker.Event, str
 
 // Event resolves any of an event's links, with its status as of now.
 func (g *gateway) Event(ctx context.Context, slug string) (tracker.Event, error) {
+	defer timed(ctx, "store")()
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	event, err := g.store.Resolve(ctx, slug)
@@ -103,6 +106,7 @@ func (g *gateway) Event(ctx context.Context, slug string) (tracker.Event, error)
 }
 
 func (g *gateway) Submit(ctx context.Context, id string, submission tracker.Submission) error {
+	defer timed(ctx, "temporal")()
 	handle, err := g.client.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
 		WorkflowID: tracker.EventID(id), UpdateID: submission.RequestID + "-" + submission.Digest(),
 		UpdateName: "submit", Args: []any{submission}, WaitForStage: client.WorkflowUpdateStageCompleted,
@@ -117,6 +121,7 @@ func (g *gateway) Submit(ctx context.Context, id string, submission tracker.Subm
 // Delete records the deletion through the event's workflow. A completed event
 // gets a new run that loads it, records the deletion, and completes again.
 func (g *gateway) Delete(ctx context.Context, slug string) error {
+	defer timed(ctx, "temporal")()
 	event, err := g.store.Resolve(ctx, slug)
 	if err != nil || event.DeletedAt != nil {
 		return err
@@ -139,6 +144,7 @@ func (g *gateway) Delete(ctx context.Context, slug string) error {
 }
 
 func (g *gateway) End(ctx context.Context, id string) (tracker.Event, error) {
+	defer timed(ctx, "temporal")()
 	var event tracker.Event
 	handle, err := g.client.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
 		WorkflowID: tracker.EventID(id), UpdateID: "end-event", UpdateName: "end",
@@ -178,6 +184,7 @@ func (g *gateway) Slug(ctx context.Context, id, slug string) (tracker.Event, err
 // edit runs an employee's change as an Update. Each request gets a fresh Update
 // ID, so changing a value back to an earlier one is a new change.
 func (g *gateway) edit(ctx context.Context, id, update string, value any) (tracker.Event, error) {
+	defer timed(ctx, "temporal")()
 	var event tracker.Event
 	var token [16]byte
 	if _, err := rand.Read(token[:]); err != nil {
@@ -195,6 +202,7 @@ func (g *gateway) edit(ctx context.Context, id, update string, value any) (track
 }
 
 func (g *gateway) Participants(ctx context.Context, eventID, cursor string, limit int) ([]tracker.Lead, string, error) {
+	defer timed(ctx, "store")()
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	leads, next, err := g.store.Participants(ctx, eventID, cursor, limit)
@@ -205,12 +213,14 @@ func (g *gateway) Participants(ctx context.Context, eventID, cursor string, limi
 }
 
 func (g *gateway) Participant(ctx context.Context, eventID, email string) (*tracker.Lead, error) {
+	defer timed(ctx, "store")()
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	return g.store.Participant(ctx, eventID, email)
 }
 
 func (g *gateway) Health(ctx context.Context) error {
+	defer timed(ctx, "health")()
 	if _, err := g.client.CheckHealth(ctx, nil); err != nil {
 		return err
 	}
