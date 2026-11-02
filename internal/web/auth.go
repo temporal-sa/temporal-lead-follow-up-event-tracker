@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/mail"
 	"strings"
@@ -27,9 +28,24 @@ type identity struct {
 }
 
 // An empty email with no error means the visitor is not authenticated.
+//
+// In order: the local development identity; identity headers set by the
+// platform's edge (only when trusted); the platform's verifier with the
+// whole Cookie header; the catalog's verifier with its session cookie.
 func (s *server) employee(r *http.Request) (identity, error) {
 	if s.config.DevAuthEmail != "" {
 		return identity{Email: strings.ToLower(s.config.DevAuthEmail)}, nil
+	}
+	if s.config.TrustIdentityHeaders {
+		if email := r.Header.Get("X-Temporal-Auth-Email"); email != "" {
+			if !employeeEmail(email) {
+				return identity{}, nil
+			}
+			return identity{Email: strings.ToLower(email), Name: headerName(r.Header.Get("X-Temporal-Auth-Name"))}, nil
+		}
+	}
+	if s.config.PlatformVerifyURL != "" {
+		return s.platformEmployee(r)
 	}
 	cookie, err := r.Cookie("temporal_demo_auth")
 	if err != nil || cookie.Value == "" || len(cookie.Value) > 8192 {
@@ -81,6 +97,65 @@ func (s *server) verify(r *http.Request, cookie *http.Cookie) (identity, error) 
 		}
 		return identity{Email: strings.ToLower(email), Name: headerName(response.Header.Get("X-Temporal-Auth-Name"))}, nil
 	default:
+		return identity{}, errAuthUnavailable
+	}
+}
+
+// maxCookieHeader bounds the Cookie header sent to the platform's verifier
+// (oauth2-proxy splits a large session into a few 4 KB cookies).
+const maxCookieHeader = 16384
+
+// platformEmployee asks the platform's verifier whom the request's cookies
+// belong to, caching the answer per Cookie header.
+func (s *server) platformEmployee(r *http.Request) (identity, error) {
+	cookies := strings.Join(r.Header.Values("Cookie"), "; ")
+	if cookies == "" || len(cookies) > maxCookieHeader {
+		return identity{}, nil
+	}
+	if cached, ok := s.sessions.get(cookies); ok {
+		return cached, nil
+	}
+	verified, err := s.platformVerify(r.Context(), cookies)
+	if err == nil {
+		s.sessions.put(cookies, verified)
+	}
+	return verified, err
+}
+
+// platformVerify sends the Cookie header, and nothing else from the
+// request, to the platform's verifier (FIELDKIT_AUTH_VERIFY_URL). Any 2xx
+// with X-Temporal-Auth-Email is a signed-in visitor; a 2xx without it, a
+// redirect, 401 or 403 is anonymous; anything else is an outage.
+func (s *server) platformVerify(ctx context.Context, cookies string) (identity, error) {
+	defer timed(ctx, "auth")()
+	ctx, cancel := context.WithTimeout(ctx, authTimeout)
+	defer cancel()
+	verify, err := http.NewRequestWithContext(ctx, http.MethodGet, s.config.PlatformVerifyURL, nil)
+	if err != nil {
+		return identity{}, errAuthUnavailable
+	}
+	verify.Header.Set("Cookie", cookies)
+	response, err := s.authClient.Do(verify)
+	if err != nil {
+		slog.Warn("platform sign-in verifier unavailable", "error", err)
+		return identity{}, errAuthUnavailable
+	}
+	defer response.Body.Close()
+	switch {
+	case response.StatusCode >= 200 && response.StatusCode < 300:
+		email := response.Header.Get("X-Temporal-Auth-Email")
+		if email == "" || !employeeEmail(email) {
+			return identity{}, nil
+		}
+		return identity{Email: strings.ToLower(email), Name: headerName(response.Header.Get("X-Temporal-Auth-Name"))}, nil
+	case response.StatusCode >= 300 && response.StatusCode < 400,
+		response.StatusCode == http.StatusUnauthorized, response.StatusCode == http.StatusForbidden:
+		return identity{}, nil
+	default:
+		// The cookie name is for diagnosis only (was the session cookie sent?);
+		// the cookie values are never logged.
+		slog.Warn("platform sign-in verifier failed", "status", response.StatusCode,
+			"sessionCookie", s.config.PlatformCookie, "sessionCookieSent", s.config.PlatformCookie != "" && strings.Contains(cookies, s.config.PlatformCookie))
 		return identity{}, errAuthUnavailable
 	}
 }

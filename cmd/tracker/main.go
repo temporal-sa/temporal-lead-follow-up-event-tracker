@@ -111,12 +111,31 @@ func run() error {
 		}
 		slog.Warn("local development employee authentication enabled", "email", devEmail)
 	}
+	// The field demo platform injects FIELDKIT_AUTH_* into every component and
+	// removes client-sent X-Temporal-Auth-* headers at its edge on every route,
+	// so its identity headers are trusted by default where it runs. Elsewhere
+	// (the catalog's deployment, local runs) nothing guarantees that, so they
+	// are not. TRUST_PLATFORM_IDENTITY_HEADERS overrides either default.
+	platformVerify := os.Getenv("FIELDKIT_AUTH_VERIFY_URL")
+	trustHeaders, err := strconv.ParseBool(env("TRUST_PLATFORM_IDENTITY_HEADERS", strconv.FormatBool(platformVerify != "")))
+	if err != nil {
+		return errors.New("TRUST_PLATFORM_IDENTITY_HEADERS must be true or false")
+	}
+	if platformVerify != "" {
+		slog.Info("employee sign-in through the platform", "verifyURL", platformVerify, "sessionCookie", os.Getenv("FIELDKIT_AUTH_COOKIE"), "trustIdentityHeaders", trustHeaders)
+	} else if trustHeaders {
+		slog.Warn("trusting X-Temporal-Auth-* request headers; only safe behind an edge that strips them")
+	}
 	handler, err := web.New(web.Config{
-		PublicURL:     env("PUBLIC_URL", "http://localhost:8080"),
-		AuthBaseURL:   env("AUTH_BASE_URL", "https://catalog.tmprl-demo.cloud"),
-		AuthVerifyURL: env("AUTH_VERIFY_URL", "https://catalog.tmprl-demo.cloud/_auth/verify"),
-		DevAuthEmail:  devEmail,
-		WritesPaused:  writesPaused,
+		PublicURL:            env("PUBLIC_URL", "http://localhost:8080"),
+		AuthBaseURL:          env("AUTH_BASE_URL", "https://catalog.tmprl-demo.cloud"),
+		AuthVerifyURL:        env("AUTH_VERIFY_URL", "https://catalog.tmprl-demo.cloud/_auth/verify"),
+		PlatformVerifyURL:    platformVerify,
+		PlatformCookie:       os.Getenv("FIELDKIT_AUTH_COOKIE"),
+		PlatformLoginURL:     os.Getenv("FIELDKIT_LOGIN_URL"),
+		TrustIdentityHeaders: trustHeaders,
+		DevAuthEmail:         devEmail,
+		WritesPaused:         writesPaused,
 	}, web.NewGateway(events, c, taskQueue))
 	if err != nil {
 		return err

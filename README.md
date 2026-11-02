@@ -247,6 +247,10 @@ them. Deploy this in an account and namespace appropriate for lead data.
 | `TEMPORAL_CA_CERT` | Optional custom CA certificate path |
 | `AUTH_BASE_URL` | `https://catalog.tmprl-demo.cloud`; employee login origin |
 | `AUTH_VERIFY_URL` | `https://catalog.tmprl-demo.cloud/_auth/verify`; trusted catalog verifier endpoint |
+| `FIELDKIT_AUTH_VERIFY_URL` | Unset; set by the field demo platform. When set, replaces `AUTH_VERIFY_URL` (below) |
+| `FIELDKIT_AUTH_COOKIE` | Unset; the platform's session cookie name, logged for diagnostics only |
+| `FIELDKIT_LOGIN_URL` | Unset; the platform's sign-in link prefix. When set, replaces `AUTH_BASE_URL`'s login |
+| `TRUST_PLATFORM_IDENTITY_HEADERS` | `true` when `FIELDKIT_AUTH_VERIFY_URL` is set, else `false`; accept `X-Temporal-Auth-Email`/`Name` on requests as the employee |
 | `DEV_AUTH_EMAIL` | Explicit local-only employee identity |
 | `TEMPORAL_DEPLOYMENT_NAME`, `TEMPORAL_WORKER_BUILD_ID` | Set together to enable pinned Worker Deployment Versioning |
 | `EVENT_LEADS_TABLE` | Required: the DynamoDB table that permanently stores events |
@@ -272,6 +276,30 @@ form, even if the visitor is an authenticated employee.
 
 For a different catalog deployment, set both `AUTH_BASE_URL` and `AUTH_VERIFY_URL`
 to its login origin and verifier endpoint.
+
+### Field demo platform sign-in
+
+The field demo platform injects `FIELDKIT_AUTH_VERIFY_URL`, `FIELDKIT_AUTH_COOKIE`
+and `FIELDKIT_LOGIN_URL` into every component; when `FIELDKIT_AUTH_VERIFY_URL` is
+set, the catalog settings above are not used. The app then finds the employee:
+
+1. From the request's `X-Temporal-Auth-Email` (and `X-Temporal-Auth-Name`), when
+   `TRUST_PLATFORM_IDENTITY_HEADERS` is on. The platform's edge sets them on routes
+   with `auth: optional` or `required`, only for a valid session, after removing
+   any a visitor sent, on every route. No verifier call is made.
+2. Otherwise from `FIELDKIT_AUTH_VERIFY_URL`, sent the request's whole `Cookie`
+   header and nothing else (with the same timeout, no redirects and 30-second
+   cache as above): any `2xx` with an `X-Temporal-Auth-Email` is signed in; a
+   `2xx` without one, a redirect, `401` or `403` is anonymous; anything else is an
+   outage (`503` on admin pages). A request without cookies is anonymous without a call.
+
+Either way the email must be exactly in the `temporal.io` domain. Sign-in links are
+`FIELDKIT_LOGIN_URL` followed by the URL-encoded page to return to.
+
+Only trust the identity headers behind an edge that strips them. That is why
+`TRUST_PLATFORM_IDENTITY_HEADERS` defaults to on only where the platform's
+variables are present, and off for the catalog deployment (whose public hosts do
+not strip them) and local runs. Set it to `false` to rely on the verifier alone.
 
 `GET /healthz` checks the HTTP process. `GET /readyz` checks its Temporal connection and the table.
 
