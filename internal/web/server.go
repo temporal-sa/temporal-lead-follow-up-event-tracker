@@ -32,10 +32,27 @@ import (
 var assets embed.FS
 
 type Config struct {
-	PublicURL     string
+	PublicURL string
+	// AuthBaseURL and AuthVerifyURL are the tmprl-demo.cloud catalog's sign-in
+	// (temporal_demo_auth cookie, 204 from the verifier). They apply only while
+	// PlatformVerifyURL is unset.
 	AuthBaseURL   string
 	AuthVerifyURL string
-	DevAuthEmail  string
+	// PlatformVerifyURL, PlatformCookie and PlatformLoginURL are the field demo
+	// platform's sign-in (FIELDKIT_AUTH_VERIFY_URL, FIELDKIT_AUTH_COOKIE,
+	// FIELDKIT_LOGIN_URL). A set PlatformVerifyURL replaces the catalog
+	// verifier; a set PlatformLoginURL replaces the catalog login link.
+	// PlatformCookie names the session cookie for diagnostics only: the whole
+	// Cookie header is forwarded.
+	PlatformVerifyURL string
+	PlatformCookie    string
+	PlatformLoginURL  string
+	// TrustIdentityHeaders accepts X-Temporal-Auth-Email/Name on the request
+	// as the signed-in employee. Only safe behind an edge that removes
+	// client-sent X-Temporal-Auth-* headers on every route and sets them only
+	// for a valid session, as the field demo platform does.
+	TrustIdentityHeaders bool
+	DevAuthEmail         string
 	// WritesPaused turns away every change during the storage cut-over; reads keep working.
 	WritesPaused bool
 }
@@ -79,6 +96,18 @@ func newHandler(config Config, gateway Gateway, authTransport http.RoundTripper)
 	authVerify, err := url.Parse(config.AuthVerifyURL)
 	if err != nil || authVerify.Host == "" || authVerify.User != nil || authVerify.RawQuery != "" || authVerify.Fragment != "" || (authVerify.Scheme != "https" && authVerify.Scheme != "http") {
 		return nil, errors.New("AUTH_VERIFY_URL must be an HTTP(S) URL without credentials, query, or fragment")
+	}
+	if config.PlatformVerifyURL != "" {
+		u, err := url.Parse(config.PlatformVerifyURL)
+		if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "https" && u.Scheme != "http") {
+			return nil, errors.New("FIELDKIT_AUTH_VERIFY_URL must be an HTTP(S) URL without credentials, query, or fragment")
+		}
+	}
+	if config.PlatformLoginURL != "" {
+		u, err := url.Parse(config.PlatformLoginURL)
+		if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" || (u.Scheme != "https" && u.Scheme != "http") {
+			return nil, errors.New("FIELDKIT_LOGIN_URL must be an HTTP(S) URL without credentials or fragment")
+		}
 	}
 	if config.DevAuthEmail != "" {
 		ip := net.ParseIP(public.Hostname())
@@ -172,7 +201,12 @@ func (s *server) writes(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// loginURL is the sign-in link that returns to path: the platform's prefix
+// followed by the URL-encoded return URL, or else the catalog's login.
 func (s *server) loginURL(path string) string {
+	if s.config.PlatformLoginURL != "" {
+		return s.config.PlatformLoginURL + url.QueryEscape(s.config.PublicURL+path)
+	}
 	return s.config.AuthBaseURL + "/auth/login?" + url.Values{"return_to": {s.config.PublicURL + path}}.Encode()
 }
 
