@@ -43,12 +43,10 @@ Two things about the platform shape the order below:
    and wait until the rollout has replaced both pods (`kubectl get pods` shows new ages).
 2. Check that changes are refused: submitting a form shows "Changes are paused for
    maintenance. Please retry in a few minutes.", and reads still work.
-3. Note the time. Flight passes issued before the freeze must expire (30 minutes)
-   before step 3.1, which moves the worker off the queue they run on.
 
 ## 2. Terminate and copy
 
-1. Terminate the event, shard, and alias workflows. Flight passes keep running:
+1. Terminate the event, shard, and alias workflows:
 
    ```sh
    temporal workflow terminate --namespace tmprl-dem-cld-event-leads.<account> --reason "storage cut-over" \

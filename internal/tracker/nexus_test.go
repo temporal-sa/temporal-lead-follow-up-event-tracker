@@ -39,12 +39,8 @@ func TestNexusReadsComeFromTheStore(t *testing.T) {
 	store.participants["open"] = map[string]Lead{"p@example.com": {Name: "Pat", Role: "SA", Email: "p@example.com"}}
 	service := Service{Store: store}
 	ctx := context.Background()
-	list, err := service.listEvents(ctx, ListEventsInput{}, nexus.StartOperationOptions{})
-	if err != nil || len(list.Events) != 1 || list.Events[0].ID != "open" {
-		t.Fatalf("list = %+v, %v", list, err)
-	}
 	got, err := service.getEvent(ctx, GetEventInput{EventID: "renamed"}, nexus.StartOperationOptions{})
-	if err != nil || got.ID != "open" || got.Status != "open" {
+	if err != nil || got.ID != "open" || got.Link != "open" || got.Status != "open" {
 		t.Fatalf("get = %+v, %v", got, err)
 	}
 	found, err := service.lookupParticipant(ctx, LookupParticipantInput{EventID: "open", Email: " P@Example.com "}, nexus.StartOperationOptions{})

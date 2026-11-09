@@ -224,7 +224,7 @@ func TestSubmissionDropsAnswersToRemovedQuestions(t *testing.T) {
 	}
 }
 
-func TestSubmissionReturnsConfirmationWithoutFlightCode(t *testing.T) {
+func TestSubmissionReturnsOnlyItsStatus(t *testing.T) {
 	form := tracker.DefaultForm()
 	form.Confirmation = "Thanks for stopping by."
 	g := &fakeGateway{event: tracker.Event{ID: "demo", Status: "open", Form: &form}}

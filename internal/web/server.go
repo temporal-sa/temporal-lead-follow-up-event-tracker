@@ -3,9 +3,7 @@ package web
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"embed"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -502,24 +500,7 @@ func (s *server) createEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	// The store reserves the slug: a taken one, or one whose workflow is still
 	// running, rejects the create, so try the next suffix.
-	for attempt := 0; ; attempt++ {
-		event.ID = tracker.Slug(event.Name, attempt)
-		if event.ID == "" || attempt >= maxSlugAttempts {
-			var idBytes [16]byte
-			if _, err := rand.Read(idBytes[:]); err != nil {
-				handleError(w, err)
-				return
-			}
-			event.ID = hex.EncodeToString(idBytes[:])
-		}
-		err = s.gateway.Create(r.Context(), event)
-		var started *serviceerror.WorkflowExecutionAlreadyStarted
-		var app *temporal.ApplicationError
-		taken := errors.As(err, &started) || (errors.As(err, &app) && app.Type() == "Taken")
-		if !taken || attempt >= maxSlugAttempts {
-			break
-		}
-	}
+	event, err = tracker.CreateWithSlug(r.Context(), event, s.gateway.Create, nil)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -527,8 +508,6 @@ func (s *server) createEvent(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Location", "/api/admin/events/"+event.ID)
 	writeJSON(w, http.StatusCreated, event)
 }
-
-const maxSlugAttempts = 50
 
 func (s *server) adminEvent(w http.ResponseWriter, r *http.Request) {
 	event, err := s.getEvent(r)

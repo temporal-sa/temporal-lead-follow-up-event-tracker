@@ -46,6 +46,9 @@ type Event struct {
 	// Subheading sits above the event name on the attendee form. Nil means
 	// DefaultSubheading; an empty string shows none.
 	Subheading *string `json:"subheading,omitempty"`
+	// CreateRequestID is the caller's ID for the create that made this event,
+	// so a retried Nexus create returns this event instead of making another.
+	CreateRequestID string `json:"createRequestId,omitempty"`
 }
 
 const DefaultSubheading = "Let's stay in touch"

@@ -51,28 +51,7 @@ func NewGateway(store tracker.Reader, c client.Client, taskQueue string) Gateway
 // workflow is still running fails with WorkflowExecutionAlreadyStarted.
 func (g *gateway) Create(ctx context.Context, event tracker.Event) error {
 	defer timed(ctx, "temporal")()
-	// A fixed Update ID would match the running event's own create and report
-	// success instead of the conflict.
-	var token [16]byte
-	if _, err := rand.Read(token[:]); err != nil {
-		return err
-	}
-	start := g.client.NewWithStartWorkflowOperation(client.StartWorkflowOptions{
-		ID: tracker.EventID(event.ID), TaskQueue: g.taskQueue,
-		WorkflowIDConflictPolicy: enums.WORKFLOW_ID_CONFLICT_POLICY_FAIL,
-		WorkflowIDReusePolicy:    enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE,
-	}, tracker.EventType, tracker.EventInput{ID: event.ID})
-	handle, err := g.client.UpdateWithStartWorkflow(ctx, client.UpdateWithStartWorkflowOptions{
-		StartWorkflowOperation: start,
-		UpdateOptions: client.UpdateWorkflowOptions{
-			UpdateName: "create", UpdateID: "create-" + hex.EncodeToString(token[:]), Args: []any{event},
-			WaitForStage: client.WorkflowUpdateStageCompleted,
-		},
-	})
-	if err != nil {
-		return err
-	}
-	return handle.Get(ctx, nil)
+	return tracker.StartEvent(ctx, g.client, g.taskQueue, event)
 }
 
 func (g *gateway) List(ctx context.Context, cursor string) ([]tracker.Event, string, error) {
